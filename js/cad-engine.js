@@ -1234,10 +1234,10 @@ const CadEngine = {
                 
                 if (m.models && (m.models.outer || m.models.upper || m.models.lower || m.models.plate)) {
                     if (inFenceMember) {
-                        // Keep outer, inner, upper, lower, holes/bolts for individual fence members
+                        // Keep outer, inner, upper, lower, seg*, holes/bolts for individual fence members
                         const keysToKeep = ['outer', 'inner', 'upper', 'lower', 'innerUpper', 'innerLower', 'plate', 'holes', 'bolts'];
                         for (const key in m.models) {
-                            if (!keysToKeep.includes(key)) {
+                            if (!keysToKeep.includes(key) && !key.startsWith('seg') && !key.startsWith('inner_')) {
                                 delete m.models[key];
                             }
                         }
@@ -1287,13 +1287,13 @@ const CadEngine = {
             const cleanModelFor2D = (m, route = []) => {
                 if (!m) return;
                 
-                // If it has "outer", it represents a hollow member in 2D profile or end view.
+                // If it has "outer", "upper", or "lower", it represents a hollow member in 2D profile or end view.
                 // We strip all inner double lines systematically for ALL members, including individual piece marks.
-                if (m.models && m.models.outer) {
-                    // Keep only outer and holes/bolts
-                    const keysToKeep = ['outer', 'inner', 'holes', 'bolts'];
+                if (m.models && (m.models.outer || m.models.upper || m.models.lower || m.models.plate)) {
+                    // Keep only outer, segmented picket pieces, and holes/bolts
+                    const keysToKeep = ['outer', 'inner', 'upper', 'lower', 'innerUpper', 'innerLower', 'plate', 'holes', 'bolts'];
                     for (const key in m.models) {
-                        if (!keysToKeep.includes(key)) {
+                        if (!keysToKeep.includes(key) && !key.startsWith('seg') && !key.startsWith('inner_')) {
                             delete m.models[key];
                         }
                     }
@@ -1389,8 +1389,8 @@ const CadEngine = {
         return model;
     },
 
-    createRailsGates: function(length, fenceHeight, postHeight, leftPostW, rightPostW, midPostW, midPostCount, topRailH, midRailH, botRailH, picketW, picketSpacing, slope, leftPostType = 'hss_rect', rightPostType = 'hss_rect', midPostType = 'hss_rect', topRailType = 'hss_rect', midRailType = 'none', botRailType = 'hss_rect', picketType = 'hss_rect', includeBasePlates = 'no', bpW = 6.0, bpH = 0.5, bpHoleD = 0.5, bpHoleOffsetX = 0.5, bpHoleOffsetY = 0.25, midRailGap = 6.0, railsGatesType = 'gates', kickPlate = 'none', kickPlateH = 12.0, kickPlateWeld = 'inner', kickPlateSize = 'PL11GA', meshType = 'none', meshOpening = 2.0, infillType = 'pickets', puppyPickets = 'no', puppyPicketsLength = 16.0, puppyPicketsSpacing = 2.0, braceType = 'none', braceW = 2.0, sidingType = 'none', braceWeld = 'inner', deckPlacement = 'back', fluteOrientation = 'vertical', deckRetainer = 'none', picketMidJoint = 'through', maxDeckLen = 24.0, maxDeckWidth = 36.0) {
-        if (!this.isLibReady()) return this._fallback_rails_gates(length, fenceHeight, postHeight, leftPostW, rightPostW, midPostW, midPostCount, topRailH, midRailH, botRailH, picketW, picketSpacing, slope, leftPostType, rightPostType, midPostType, topRailType, midRailType, botRailType, picketType, includeBasePlates, bpW, bpH, bpHoleD, bpHoleOffsetX, bpHoleOffsetY, midRailGap, railsGatesType, kickPlate, kickPlateH, kickPlateWeld, kickPlateSize, meshType, meshOpening, infillType, puppyPickets, puppyPicketsLength, puppyPicketsSpacing);
+    createRailsGates: function(length, fenceHeight, postHeight, leftPostW, rightPostW, midPostW, midPostCount, topRailH, midRailH, botRailH, picketW, picketSpacing, slope, leftPostType = 'hss_rect', rightPostType = 'hss_rect', midPostType = 'hss_rect', topRailType = 'hss_rect', midRailType = 'none', botRailType = 'hss_rect', picketType = 'hss_rect', includeBasePlates = 'no', bpW = 6.0, bpH = 0.5, bpHoleD = 0.5, bpHoleOffsetX = 0.5, bpHoleOffsetY = 0.25, midRailGap = 6.0, railsGatesType = 'gates', kickPlate = 'none', kickPlateH = 12.0, kickPlateWeld = 'inner', kickPlateSize = 'PL11GA', meshType = 'none', meshOpening = 2.0, infillType = 'pickets', puppyPickets = 'no', puppyPicketsLength = 16.0, puppyPicketsSpacing = 2.0, braceType = 'none', braceW = 2.0, sidingType = 'none', braceWeld = 'inner', deckPlacement = 'back', fluteOrientation = 'vertical', deckRetainer = 'none', picketMidJoint = 'through', maxDeckLen = 24.0, maxDeckWidth = 36.0, panicBarPlate = 'none', panicBarPlateW = 10.0, panicBarPlateGap = 36.0) {
+        if (!this.isLibReady()) return this._fallback_rails_gates(length, fenceHeight, postHeight, leftPostW, rightPostW, midPostW, midPostCount, topRailH, midRailH, botRailH, picketW, picketSpacing, slope, leftPostType, rightPostType, midPostType, topRailType, midRailType, botRailType, picketType, includeBasePlates, bpW, bpH, bpHoleD, bpHoleOffsetX, bpHoleOffsetY, midRailGap, railsGatesType, kickPlate, kickPlateH, kickPlateWeld, kickPlateSize, meshType, meshOpening, infillType, puppyPickets, puppyPicketsLength, puppyPicketsSpacing, panicBarPlate, panicBarPlateW, panicBarPlateGap);
 
         const model = { 
             models: { 
@@ -1561,6 +1561,20 @@ const CadEngine = {
                 model.models.kickPlate.models.plate.origin = [kpX, kpY];
             }
 
+            // 6B. Panic Bar Plate (Welded to inside part of left and right runners; gap is from bottom of gate to center of plate)
+            const hasPB = (panicBarPlate && panicBarPlate !== 'none');
+            const actualPbW = parseFloat(panicBarPlateW) || 10.0;
+            const pbCenterY = parseFloat(panicBarPlateGap) || 36.0;
+            const pbLen = Math.max(1, length - leftPostW - rightPostW);
+            const pbX = leftPostW;
+            const pbY = Math.max(0, pbCenterY - actualPbW / 2);
+
+            if (hasPB) {
+                model.models.panicBarPlate = { models: {} };
+                model.models.panicBarPlate.models.plate = new makerjs.models.Rectangle(pbLen, actualPbW);
+                model.models.panicBarPlate.models.plate.origin = [pbX, pbY];
+            }
+
             const strMesh = String(meshType || infillType || '').toLowerCase();
             const isWwmKind = strMesh.includes('wwm');
             const isXfKind = strMesh.includes('xf');
@@ -1589,19 +1603,55 @@ const CadEngine = {
                     const px = px_center - picketW / 2;
                     const picket = { models: {} };
 
-                    if (hasMid) {
+                    if (hasPB) {
+                        // Clip vertical picket interval around midRail (if any) and panicBarPlate
+                        const baseStartY = (hasMid && picketMidJoint === 'weld_top') ? midY_top : (hasKP ? Math.max(botRailH, kpTopY) : botRailH);
+                        const baseEndY = fenceHeight - topRailH;
+                        let intervals = [[baseStartY, baseEndY]];
+                        const subtractInterval = (intvList, cutY0, cutY1) => {
+                            const next = [];
+                            intvList.forEach(([a, b]) => {
+                                if (cutY1 <= a || cutY0 >= b) {
+                                    next.push([a, b]);
+                                } else {
+                                    if (cutY0 > a + 0.1) next.push([a, cutY0]);
+                                    if (cutY1 < b - 0.1) next.push([cutY1, b]);
+                                }
+                            });
+                            return next;
+                        };
+                        if (hasMid) {
+                            intervals = subtractInterval(intervals, midY_bot, midY_top);
+                        }
+                        intervals = subtractInterval(intervals, pbY, pbY + actualPbW);
+                        intervals.forEach(([segY0, segY1], sIdx) => {
+                            const segH = segY1 - segY0;
+                            if (segH > 0.1) {
+                                const key = sIdx === 0 ? 'lower' : (sIdx === 1 ? 'upper' : 'seg' + sIdx);
+                                picket.models[key] = new makerjs.models.Rectangle(picketW, segH);
+                                picket.models[key].origin = [px, segY0];
+                                if (picketType === 'hss_rect' && picketW > 2 * pickT) {
+                                    const innerKey = 'inner_' + key;
+                                    picket.models[innerKey] = new makerjs.models.Rectangle(picketW - 2 * pickT, segH);
+                                    picket.models[innerKey].origin = [px + pickT, segY0];
+                                }
+                            }
+                        });
+                    } else if (hasMid) {
                         // Mid runner is present:
                         // 1. Upper Picket segment (from top of mid runner to top runner)
                         const upperY0 = midY_top;
                         const upperY1 = fenceHeight - topRailH;
-                        const upperH = Math.max(1, upperY1 - upperY0);
+                        if (upperY1 > upperY0 + 0.1) {
+                            const upperH = Math.max(1, upperY1 - upperY0);
 
-                        picket.models.upper = new makerjs.models.Rectangle(picketW, upperH);
-                        picket.models.upper.origin = [px, upperY0];
+                            picket.models.upper = new makerjs.models.Rectangle(picketW, upperH);
+                            picket.models.upper.origin = [px, upperY0];
 
-                        if (picketType === 'hss_rect' && picketW > 2 * pickT) {
-                            picket.models.innerUpper = new makerjs.models.Rectangle(picketW - 2 * pickT, upperH);
-                            picket.models.innerUpper.origin = [px + pickT, upperY0];
+                            if (picketType === 'hss_rect' && picketW > 2 * pickT) {
+                                picket.models.innerUpper = new makerjs.models.Rectangle(picketW - 2 * pickT, upperH);
+                                picket.models.innerUpper.origin = [px + pickT, upperY0];
+                            }
                         }
 
                         // 2. Lower Picket segment (only when pickets pass through mid runner, and not hidden by kick plate)

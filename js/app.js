@@ -23,17 +23,20 @@ function initApp() {
 
     let currentMode = 'shapes';
     let activeSubMode = 'panel'; // 'panel', 'basePlate', 'loosePost', 'infillSheet', 'stopper', 'panicBarPlate'
+    let lastRenderedCategory = null;
     let basePlateConfig = getDefaultBasePlateConfig();
     let loosePostConfig = {
         includeBP: 'yes',
-        qty: 1,
+        qty: 2,
+        qtyManual: false,
         extraLen: 0,
         offsetX: 0,
         offsetY: 0
     };
     let infillSheetConfig = {
         drawingNo: '',
-        qty: 1,
+        qty: 2,
+        qtyManual: false,
         infillType: 'xf',
         width: 18.0,
         height: 69.0,
@@ -47,6 +50,7 @@ function initApp() {
     let stopperConfig = {
         drawingNo: '',
         qty: 1,
+        qtyManual: false,
         pieceMark: '',
         description: 'QGS1',
         angleSize: 'L4x4x1/4',
@@ -59,6 +63,7 @@ function initApp() {
     let panicBarPlateConfig = {
         drawingNo: '',
         qty: 1,
+        qtyManual: false,
         pieceMark: '',
         width: 8.0,
         length: 24.0,
@@ -68,6 +73,39 @@ function initApp() {
         remark: 'PANIC BAR PLATE'
     };
     let customParts = [];
+
+    function getGateAssemblyQty() {
+        return parseInt(document.getElementById('inp-drawingQty')?.value || document.getElementById('exp-qty')?.value || '1', 10) || 1;
+    }
+
+    function syncAdvanceFeatureDefaultQtys() {
+        const gQty = getGateAssemblyQty();
+        if (loosePostConfig && !loosePostConfig.qtyManual) {
+            loosePostConfig.qty = 2 * gQty;
+            const el = document.getElementById('inp-loose-post-qty');
+            if (el) el.value = loosePostConfig.qty;
+        }
+        if (basePlateConfig && !basePlateConfig.qtyManual) {
+            basePlateConfig.qty = 2 * gQty;
+            const el = document.getElementById('inp-bp-qty');
+            if (el) el.value = basePlateConfig.qty;
+        }
+        if (infillSheetConfig && !infillSheetConfig.qtyManual) {
+            infillSheetConfig.qty = 2 * gQty;
+            const el = document.getElementById('inp-infill-sheet-qty');
+            if (el) el.value = infillSheetConfig.qty;
+        }
+        if (stopperConfig && !stopperConfig.qtyManual) {
+            stopperConfig.qty = 1 * gQty;
+            const el = document.getElementById('inp-stopper-qty');
+            if (el) el.value = stopperConfig.qty;
+        }
+        if (panicBarPlateConfig && !panicBarPlateConfig.qtyManual) {
+            panicBarPlateConfig.qty = 1 * gQty;
+            const el = document.getElementById('inp-panic-bar-qty');
+            if (el) el.value = panicBarPlateConfig.qty;
+        }
+    }
 
     function formatFraction(val) {
         if (typeof val !== 'number' || isNaN(val)) return '0"';
@@ -92,8 +130,133 @@ function initApp() {
         }
     }
 
+    function parseCustomFractionOrNum(str) {
+        if (str === undefined || str === null) return 0;
+        if (typeof str === 'number') return isFinite(str) ? str : 0;
+        let s = String(str).trim().toUpperCase().replace(/["']/g, '');
+        if (!s) return 0;
+        if (s.endsWith('GA')) {
+            const ga = parseFloat(s.replace(/GA/i, '').trim());
+            const gaMap = { 7: 0.1793, 8: 0.1644, 10: 0.1345, 11: 0.1196, 12: 0.1046, 13: 0.0897, 14: 0.0747, 16: 0.0598, 18: 0.0478, 20: 0.0359, 22: 0.0299 };
+            return gaMap[ga] || 0.1196;
+        }
+        if (s.includes(' ')) {
+            const parts = s.split(/\s+/);
+            return (parseFloat(parts[0]) || 0) + parseCustomFractionOrNum(parts.slice(1).join(' '));
+        }
+        if (s.includes('-') && s.includes('/')) {
+            const parts = s.split('-');
+            return (parseFloat(parts[0]) || 0) + parseCustomFractionOrNum(parts[1]);
+        }
+        if (s.includes('/')) {
+            const parts = s.split('/');
+            if (parts.length === 2 && parseFloat(parts[1])) {
+                return (parseFloat(parts[0]) || 0) / parseFloat(parts[1]);
+            }
+        }
+        return parseFloat(s) || 0;
+    }
+
+    function parseCustomMemberSpec(shapeVal, specStr, defaultW = 2.0, defaultT = 0.1196) {
+        let shape = String(shapeVal || 'HSS').trim().toUpperCase();
+        if (shape === 'HSS_RECT') shape = 'HSS';
+        else if (shape === 'HSS_CIRC') shape = 'PIPE';
+        else if (shape === 'ANGLES' || shape === 'ANGLE') shape = 'L';
+        else if (shape === 'CHANNEL') shape = 'C';
+        else if (shape === 'PLATE') shape = 'PL';
+        else if (shape === 'FLAT_BAR') shape = 'FB';
+        else if (shape === 'W_BEAM') shape = 'W';
+
+        let raw = String(specStr !== undefined && specStr !== null ? specStr : '').trim();
+        raw = raw.replace(/^(HSS|PIPE|CBAR|C-BAR|FLAT\s*BAR|FB|PL|PLATE|SQ|RD|L|C|W)\b\s*[-–]?\s*/i, '').trim();
+
+        const defDimStr = defaultW === 0.75 ? '3/4x3/4x14GA' : (defaultW === 0.5 ? '1/2x1/2x16GA' : (defaultW === 1.5 ? '1.5x1.5x11GA' : `${defaultW}x${defaultW}x11GA`));
+        if (!raw) raw = defDimStr;
+
+        const cleanDims = raw.toUpperCase().replace(/\s*[xX*]\s*/g, 'x').replace(/\s+/g, ' ').trim();
+        const tokens = cleanDims.split('x').map(t => t.trim()).filter(Boolean);
+        const nums = tokens.map(t => parseCustomFractionOrNum(t));
+
+        let w = defaultW || 2.0;
+        let h = w;
+        let t = defaultT || 0.1196;
+
+        if (shape === 'FB' || shape === 'PL') {
+            if (tokens.length >= 2) {
+                const n0 = nums[0] || 0.25;
+                const n1 = nums[1] || defaultW || 2.0;
+                if (n0 <= 1.0 && n1 > n0) {
+                    t = n0;
+                    w = n1;
+                    h = n1;
+                } else {
+                    w = n0;
+                    h = n0;
+                    t = n1;
+                }
+            } else if (tokens.length === 1 && nums[0] > 0) {
+                w = nums[0];
+                h = w;
+            }
+        } else if (shape === 'PIPE' || shape === 'RD' || shape === 'SQ') {
+            if (tokens.length >= 1 && nums[0] > 0) {
+                w = nums[0];
+                h = w;
+            }
+            if (tokens.length >= 2 && nums[1] > 0) {
+                if (tokens[1].includes('GA') || nums[1] < w * 0.5) {
+                    t = nums[1];
+                } else {
+                    h = nums[1];
+                    if (tokens.length >= 3 && nums[2] > 0) t = nums[2];
+                }
+            }
+        } else {
+            if (tokens.length >= 1 && nums[0] > 0) {
+                w = nums[0];
+                h = w;
+            }
+            if (tokens.length >= 2 && nums[1] > 0) {
+                if (tokens[1].includes('GA') && tokens.length === 2) {
+                    t = nums[1];
+                } else {
+                    h = nums[1];
+                }
+            }
+            if (tokens.length >= 3 && nums[2] > 0) {
+                t = nums[2];
+            }
+        }
+
+        if (!isFinite(w) || w <= 0) w = defaultW || 2.0;
+        if (!isFinite(h) || h <= 0) h = w;
+        if (!isFinite(t) || t <= 0) t = defaultT || 0.1196;
+
+        let displayDims = cleanDims;
+        if (tokens.length === 1 && /^\d+(\.\d+)?$/.test(tokens[0])) {
+            if (shape === 'HSS') displayDims = `${tokens[0]}x${tokens[0]}x11GA`;
+            else if (shape === 'SQ' || shape === 'RD') displayDims = `${tokens[0]}`;
+            else displayDims = `${tokens[0]}x${tokens[0]}`;
+        }
+
+        const desc = `${shape} ${displayDims}`;
+        const grade = (shape === 'HSS') ? 'A500' : 'A36';
+        return {
+            shape,
+            dims: displayDims,
+            desc,
+            fbomDesc: displayDims,
+            w,
+            h,
+            t,
+            grade
+        };
+    }
+
     function getDefaultBasePlateConfig() {
         return {
+            qty: 2,
+            qtyManual: false,
             connectionType: 'bottom',
             wallMountOffset: 1.0,
             plateShape: 'qiw_standard',
@@ -354,6 +517,10 @@ function initApp() {
         const dwgInp = document.getElementById('inp-bp-drawing-no');
         if (dwgInp) {
             bpConfig.drawingNo = dwgInp.value.trim();
+        }
+        const bpQtyInp = document.getElementById('inp-bp-qty');
+        if (bpQtyInp) {
+            bpConfig.qty = parseInt(bpQtyInp.value, 10) || (2 * getGateAssemblyQty());
         }
         
         bpConfig.plateShape = shapeSelect.value;
@@ -1019,14 +1186,9 @@ function initApp() {
 
 
     shapeCategory.addEventListener('change', () => {
-
-
+        activeSubMode = 'panel';
         updateSubcategoryVisibility();
-
-
-        updateInputs();
-
-
+        updateInputs(true);
     });
 
 
@@ -1034,41 +1196,22 @@ function initApp() {
 
 
         shapeSubcategory.addEventListener('change', () => {
-
-
+            activeSubMode = 'panel';
             const subcat = shapeSubcategory.value;
-
-
             const cat = shapeCategory.value;
-
-
             if (cat !== 'rails_gates') return;
 
-
             const setVal = (id, val) => {
-
-
                 const el = document.getElementById('inp-' + id);
-
-
                 if (el) {
-
-
                     el.value = val;
-
-
                     el.dispatchEvent(new Event('change'));
-
-
                 }
-
-
             };
-
 
             let dpartsTmplName = null;
 
-            updateInputs();
+            updateInputs(true);
 
             if (subcat === 'ped_gate' || subcat === 'picket_gate') {
                 setVal('picketSize', 'HSS1/2x1/2x16GA');
@@ -2061,17 +2204,18 @@ function initApp() {
         
         const dimText = document.getElementById('dim-text');
         if (dimText) {
+            const bpQty = parseInt(bpConfig.qty, 10) || (2 * getGateAssemblyQty());
             const isWall = bpConfig.connectionType === 'wall_mount';
             const mark = bpConfig.plateShape === 'qiw_standard' ? (bpConfig.qiwPlateType || 'QBP54') : resolveBasePlatePieceMark(bpConfig);
             if (isWall) {
-                dimText.textContent = `Wall Mount Base Plate: ${mark} (Offset: ${bpConfig.wallMountOffset !== undefined ? bpConfig.wallMountOffset : 1.0}")`;
+                dimText.textContent = `Wall Mount Base Plate: Qty: ${bpQty} | ${mark} (Offset: ${bpConfig.wallMountOffset !== undefined ? bpConfig.wallMountOffset : 1.0}")`;
             } else if (bpConfig.plateShape === 'rect') {
-                dimText.textContent = `Base Plate: ${bpConfig.width}" x ${bpConfig.height}" x ${bpConfig.thickness}" [Rect]`;
+                dimText.textContent = `Base Plate: Qty: ${bpQty} | ${bpConfig.width}" x ${bpConfig.height}" x ${bpConfig.thickness}" [Rect]`;
             } else if (bpConfig.plateShape === 'qiw_standard') {
-                dimText.textContent = `Base Plate: ${bpConfig.qiwPlateType || 'QBP43'}`;
+                dimText.textContent = `Base Plate: Qty: ${bpQty} | ${bpConfig.qiwPlateType || 'QBP43'}`;
             } else {
                 const vsCount = bpConfig.polyVerts.filter(v => v.x !== "" && v.y !== "").length;
-                dimText.textContent = `Base Plate: CUSTOM ${vsCount}-VTX x ${bpConfig.thickness}" [Poly]`;
+                dimText.textContent = `Base Plate: Qty: ${bpQty} | CUSTOM ${vsCount}-VTX x ${bpConfig.thickness}" [Poly]`;
             }
         }
         applyZoom();
@@ -2914,12 +3058,11 @@ function initApp() {
         };
 
         const finishText = (meta.finishText || 'PRIMER').toUpperCase();
-        const assemblyQty = parseInt(document.getElementById('inp-drawingQty')?.value || document.getElementById('exp-qty')?.value || '1', 10) || 1;
 
         bomItems.forEach(item => {
             doc.rect(bomX, currentY, bomW, 5.5, 'S');
-            const totalQty = typeof item.qty === 'number' ? (item.qty * assemblyQty) : item.qty;
-            const totalWeight = typeof item.weight === 'number' ? (item.weight * assemblyQty) : item.weight;
+            const totalQty = (item.qty !== undefined && item.qty !== null) ? item.qty : 1;
+            const totalWeight = item.weight;
             const weightVal = typeof totalWeight === 'number' ? totalWeight.toFixed(1) : (totalWeight != null ? String(totalWeight) : '-');
 
             drawCellText(totalQty.toString(), bomX, 7, "center");
@@ -3202,13 +3345,14 @@ function initApp() {
         doc.setFontSize(8.5);
         doc.text(displayMark, pmLx + 2.0, pmLy + 1.2, { align: 'left' });
 
+        const bpQty = parseInt(bpConfig.qty, 10) || (2 * getGateAssemblyQty());
         const titleY = Math.min(rectY + rectH + 12, 148);
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(7.5);
         doc.text("PLAN VIEW", cx, titleY, { align: "center" });
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(8.5);
-        doc.text(`1-BASE PLATE : ${displayMark}`, cx, titleY + 5.5, { align: "center" });
+        doc.text(`${bpQty}-BASE PLATE : ${displayMark}`, cx, titleY + 5.5, { align: "center" });
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(5.5);
         doc.text("SCALE: 3\" = 1'-0\"", cx, titleY + 9.5, { align: "center" });
@@ -3221,13 +3365,13 @@ function initApp() {
 
         const bpItems = [
             {
-                qty: 1,
+                qty: bpQty,
                 mark: displayMark,
                 desc: bpDesc,
                 len: isQiw ? "" : formatFraction(bpH_val),
                 grade: "A36",
                 remark: "BASE PLATE",
-                weight: Math.round(bpWeight * 10) / 10
+                weight: Math.round(bpWeight * bpQty * 10) / 10
             }
         ];
 
@@ -3305,14 +3449,17 @@ function initApp() {
         const defaultPostSize = v.leftPostSize || v.postSize || 'HSS2x2x14GA';
         const postSize = lpc.postSize || defaultPostSize;
         const isCustom = (postSize === 'CUSTOM');
-        const customW = parseFloat(lpc.postCustomW) || 2.0;
+        const customShape = lpc.postCustomShape || 'HSS';
+        const customSpec = lpc.postCustomSpec || (lpc.postCustomW ? `${lpc.postCustomW}x${lpc.postCustomW}x11GA` : '2x2x11GA');
+        const parsedCustom = parseCustomMemberSpec(customShape, customSpec, parseFloat(lpc.postCustomW) || 2.0, 0.1196);
+        const customW = parsedCustom.w || 2.0;
 
         let postW = 2.0;
         let postDwgName = postSize;
 
         if (isCustom) {
             postW = customW;
-            postDwgName = `HSS ${postW}x${postW}`;
+            postDwgName = parsedCustom.desc;
         } else {
             let foundShape = null;
             if (typeof SHAPES_DB !== 'undefined' && SHAPES_DB['hss_rect']) {
@@ -3332,13 +3479,15 @@ function initApp() {
         const pHeight = (lpc.length !== undefined && !isNaN(parseFloat(lpc.length)))
             ? parseFloat(lpc.length)
             : (defaultHeight + (parseFloat(lpc.extraLen) || 0));
-        const qty = parseInt(lpc.qty, 10) || 1;
+        const qty = parseInt(lpc.qty, 10) || (2 * getGateAssemblyQty());
 
         return {
             qty,
             postSize,
             shapeType: 'hss_rect',
             isCustom,
+            customShape,
+            customSpec,
             customW,
             postW,
             pHeight,
@@ -3416,12 +3565,15 @@ function initApp() {
             { id: 'HSS4x4x14GA', name: 'HSS 4x4x14GA' },
             { id: 'HSS3x3x11GA', name: 'HSS 3x3x11GA' },
             { id: 'HSS3x3x14GA', name: 'HSS 3x3x14GA' },
+            { id: 'HSS2.5x2.5x11GA', name: 'HSS 2-1/2x2-1/2x11GA' },
             { id: 'HSS2.5x2.5x14GA', name: 'HSS 2-1/2x2-1/2x14GA' },
             { id: 'HSS2x2x11GA', name: 'HSS 2x2x11GA' },
             { id: 'HSS2x2x14GA', name: 'HSS 2x2x14GA' },
             { id: 'HSS2x2x16GA', name: 'HSS 2x2x16GA' },
+            { id: 'HSS1.5x1.5x11GA', name: 'HSS 1.5x1.5x11GA' },
             { id: 'HSS1.5x1.5x14GA', name: 'HSS 1.5x1.5x14GA' },
             { id: 'HSS1.5x1.5x16GA', name: 'HSS 1.5x1.5x16GA' },
+            { id: 'HSS1x1x11GA', name: 'HSS 1x1x11GA' },
             { id: 'HSS1x1x14GA', name: 'HSS 1x1x14GA' },
             { id: 'HSS1x1x16GA', name: 'HSS 1x1x16GA' },
             { id: 'HSS3/4x3/4x16GA', name: 'HSS 3/4x3/4x16GA' },
@@ -3655,7 +3807,7 @@ function initApp() {
 
         const mmCenterY = titleElevationY + 5.5;
         doc.setFontSize(8.5);
-        doc.text(`${loosePostConfig.qty || 1}-LOOSE POST : ${loosePostMark}`, titleElevationX, mmCenterY, { align: "center" });
+        doc.text(`${lpParams.qty}-LOOSE POST : ${loosePostMark}`, titleElevationX, mmCenterY, { align: "center" });
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(5.5);
         doc.text("SCALE: 3/4\" = 1'-0\"", titleElevationX, mmCenterY + 4.0, { align: "center" });
@@ -3973,7 +4125,7 @@ function initApp() {
             doc.text("PLAN VIEW", planCx, titlePlanY, { align: "center" });
             doc.setFont('helvetica', 'bold');
             doc.setFontSize(8.5);
-            doc.text(`${loosePostConfig.qty || 1}-BASE PLATE : ${lpBp.bpMark}`, planCx, titlePlanY + 5.5, { align: "center" });
+            doc.text(`${lpParams.qty}-BASE PLATE : ${lpBp.bpMark}`, planCx, titlePlanY + 5.5, { align: "center" });
             doc.setFont('helvetica', 'normal');
             doc.setFontSize(5.5);
             doc.text("SCALE: 3\" = 1'-0\"", planCx, titlePlanY + 9.5, { align: "center" });
@@ -3997,7 +4149,7 @@ function initApp() {
                 len: formatFraction(pHeight),
                 grade: "A500",
                 remark: "LOOSE POST",
-                weight: Math.round(postWeight * 10) / 10
+                weight: Math.round(postWeight * postQty * 10) / 10
             }
         ];
 
@@ -4009,7 +4161,7 @@ function initApp() {
                 len: lpBp.isQiw ? "" : formatFraction(lpBp.bpHeight),
                 grade: "A36",
                 remark: "BASE PLATE",
-                weight: lpBp.bpWeight
+                weight: Math.round(lpBp.bpWeight * postQty * 10) / 10
             });
         }
 
@@ -4041,7 +4193,7 @@ function initApp() {
         const infillH = parseFloat(cfg.height !== undefined && cfg.height !== "" ? cfg.height : defaultH) || 69.0;
         const infillType = (cfg.infillType || (v.meshType === 'wwm' ? 'wwm' : 'xf')).toLowerCase();
         const isWwm = (infillType === 'wwm');
-        const qty = parseInt(cfg.qty) || 1;
+        const qty = parseInt(cfg.qty, 10) || (2 * getGateAssemblyQty());
         const dwgNo = sheetInfo?.drawingNo || cfg.drawingNo || '58';
         const cleanNo = sheetInfo?.cleanDrawingNo || String(dwgNo).toUpperCase().replace(/[^A-Z0-9]/g, '') || '58';
         const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : `${cleanNo}M1`;
@@ -4261,7 +4413,7 @@ function initApp() {
         const v = vals || (typeof getNormalizedVals === 'function' ? getNormalizedVals() : {});
         const cfg = config || (typeof stopperConfig !== 'undefined' ? stopperConfig : {});
 
-        const qty = parseInt(cfg.qty) || 1;
+        const qty = parseInt(cfg.qty, 10) || (1 * getGateAssemblyQty());
         const dwgNo = sheetInfo?.drawingNo || cfg.drawingNo || '59';
         const cleanNo = sheetInfo?.cleanDrawingNo || String(dwgNo).toUpperCase().replace(/[^A-Z0-9]/g, '') || '59';
         const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : `${cleanNo}M1`;
@@ -4276,7 +4428,7 @@ function initApp() {
                 len: "",
                 grade: "A36",
                 remark: "GATE STOPPER",
-                weight: 1.8
+                weight: Math.round(1.8 * qty * 10) / 10
             }
         ];
         drawStandardBOMTable(doc, stopperBOMItems, meta);
@@ -4587,7 +4739,7 @@ function initApp() {
         const v = vals || (typeof getNormalizedVals === 'function' ? getNormalizedVals() : {});
         const cfg = config || (typeof panicBarPlateConfig !== 'undefined' ? panicBarPlateConfig : {});
 
-        const qty = parseInt(cfg.qty) || 1;
+        const qty = parseInt(cfg.qty, 10) || (1 * getGateAssemblyQty());
         const dwgNo = sheetInfo?.drawingNo || cfg.drawingNo || '60';
         const cleanNo = sheetInfo?.cleanDrawingNo || String(dwgNo).toUpperCase().replace(/[^A-Z0-9]/g, '') || '60';
         const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : `${cleanNo}M1`;
@@ -5608,7 +5760,29 @@ function initApp() {
         }
     }
 
+    function getSubModeEditorContainer() {
+        let container = document.getElementById('submode-editor-container');
+        if (!container && dynamicInputs && dynamicInputs.parentElement) {
+            container = document.createElement('div');
+            container.id = 'submode-editor-container';
+            container.className = dynamicInputs.className || 'inputs-grid';
+            container.style.display = 'none';
+            dynamicInputs.parentElement.insertBefore(container, dynamicInputs.nextSibling);
+        }
+        return container;
+    }
+
+    function renderSubModeHtml(html) {
+        const subContainer = getSubModeEditorContainer();
+        if (dynamicInputs) dynamicInputs.style.display = 'none';
+        if (subContainer) {
+            subContainer.style.display = '';
+            subContainer.innerHTML = html;
+        }
+    }
+
     function renderBasePlateEditor() {
+        syncAdvanceFeatureDefaultQtys();
         const bpConfig = basePlateConfig;
         const isCustomStyle = true;
         const sheets = getProjectSheets();
@@ -5631,6 +5805,11 @@ function initApp() {
                 </div>
             </div>
             
+            <div class="input-group">
+                <label>Quantity</label>
+                <input type="number" id="inp-bp-qty" value="${bpConfig.qty || (2 * getGateAssemblyQty())}" min="1" step="1">
+            </div>
+
             <div class="input-group">
                 <label>Plate Shape</label>
                 <select id="inp-bp-plateShape">
@@ -5768,7 +5947,7 @@ function initApp() {
         </div>
         `;
         
-        dynamicInputs.innerHTML = html;
+        renderSubModeHtml(html);
         if (window.lucide) lucide.createIcons();
         
         document.getElementById('btn-bp-manage-parts').addEventListener('click', openBasePlatePartsModal);
@@ -5911,6 +6090,14 @@ function initApp() {
             });
         }
         
+        const bpQtyEl = document.getElementById('inp-bp-qty');
+        if (bpQtyEl) {
+            bpQtyEl.addEventListener('input', () => {
+                bpConfig.qtyManual = true;
+                saveInputsAndRefresh();
+            });
+        }
+
         ['inp-bp-drawing-no', 'inp-bp-thickness', 'inp-bp-width', 'inp-bp-height', 'inp-bp-corners-diameter', 'inp-bp-corners-margin', 'inp-bp-grid-rows', 'inp-bp-grid-cols', 'inp-bp-grid-diameter', 'inp-bp-grid-marginX', 'inp-bp-grid-marginY', 'inp-bp-slotLength', 'inp-bp-slotAngle', 'inp-bp-wallMountOffset'].forEach(id => {
             const inp = document.getElementById(id);
             if (inp) {
@@ -5931,6 +6118,7 @@ function initApp() {
     }
 
     function renderLoosePostEditor() {
+        syncAdvanceFeatureDefaultQtys();
         const vals = (typeof getNormalizedVals === 'function' ? getNormalizedVals() : {});
         const lpParams = getLoosePostParams(loosePostConfig, vals);
         const qty = lpParams.qty;
@@ -5938,6 +6126,8 @@ function initApp() {
         const postSize = lpParams.postSize;
         const isCustom = lpParams.isCustom;
         const customW = lpParams.customW;
+        const customShape = lpParams.customShape || 'HSS';
+        const customSpec = lpParams.customSpec || '2x2x11GA';
         const offsetX = loosePostConfig.offsetX || 0;
         const offsetY = loosePostConfig.offsetY || 0;
         const includeBP = loosePostConfig.includeBP || 'yes';
@@ -5975,8 +6165,21 @@ function initApp() {
                 </div>
 
                 <div id="grp-lp-custom-w" class="input-group" style="display: ${isCustom ? 'block' : 'none'}; margin-bottom: 12px;">
-                    <label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px; color:var(--text-color);">Post Custom Width (in)</label>
-                    <input type="number" id="inp-loose-post-custom-w" value="${customW}" step="0.125" min="0.5">
+                    <label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px; color:var(--accent-primary, #00d4ff);">Custom Post Shape & Dimensions</label>
+                    <div style="display: grid; grid-template-columns: 115px 1fr; gap: 6px;">
+                        <select id="inp-loose-post-custom-shape" style="padding: 5px 8px; font-size: 12px;">
+                            <option value="HSS" ${customShape === 'HSS' ? 'selected' : ''}>HSS Tubing</option>
+                            <option value="PIPE" ${customShape === 'PIPE' ? 'selected' : ''}>Pipe</option>
+                            <option value="L" ${customShape === 'L' ? 'selected' : ''}>Angle (L)</option>
+                            <option value="C" ${customShape === 'C' ? 'selected' : ''}>Channel (C)</option>
+                            <option value="CBAR" ${customShape === 'CBAR' ? 'selected' : ''}>C-Bar</option>
+                            <option value="FB" ${customShape === 'FB' ? 'selected' : ''}>Flat Bar (FB)</option>
+                            <option value="PL" ${customShape === 'PL' ? 'selected' : ''}>Plate (PL)</option>
+                            <option value="SQ" ${customShape === 'SQ' ? 'selected' : ''}>Square Bar</option>
+                            <option value="W" ${customShape === 'W' ? 'selected' : ''}>W-Beam</option>
+                        </select>
+                        <input type="text" id="inp-loose-post-custom-spec" value="${customSpec}" placeholder="e.g. 2x2x11GA" style="padding: 5px 8px; font-size: 12px;">
+                    </div>
                 </div>
 
                 <div class="input-group" style="margin-bottom: 14px;">
@@ -6063,7 +6266,7 @@ function initApp() {
             </div>
         `;
 
-        dynamicInputs.innerHTML = html;
+        renderSubModeHtml(html);
 
         const exitBtn = document.getElementById('btn-exit-loose-post');
         if (exitBtn) {
@@ -6085,8 +6288,14 @@ function initApp() {
             if (qtyInp) loosePostConfig.qty = parseInt(qtyInp.value) || 1;
             const sizeInp = document.getElementById('inp-loose-post-size');
             if (sizeInp) loosePostConfig.postSize = sizeInp.value;
-            const customWInp = document.getElementById('inp-loose-post-custom-w');
-            if (customWInp) loosePostConfig.postCustomW = parseFloat(customWInp.value) || 2.0;
+            const customShapeInp = document.getElementById('inp-loose-post-custom-shape');
+            if (customShapeInp) loosePostConfig.postCustomShape = customShapeInp.value || 'HSS';
+            const customSpecInp = document.getElementById('inp-loose-post-custom-spec');
+            if (customSpecInp) {
+                loosePostConfig.postCustomSpec = customSpecInp.value.trim() || '2x2x11GA';
+                const parsed = parseCustomMemberSpec(loosePostConfig.postCustomShape || 'HSS', loosePostConfig.postCustomSpec, 2.0, 0.1196);
+                loosePostConfig.postCustomW = parsed.w || 2.0;
+            }
             const lenInp = document.getElementById('inp-loose-post-length');
             if (lenInp) loosePostConfig.length = parseFloat(lenInp.value) || 72.0;
 
@@ -6164,7 +6373,15 @@ function initApp() {
             });
         }
 
-        ['inp-loose-post-drawing-no', 'inp-loose-post-qty', 'inp-loose-post-custom-w', 'inp-loose-post-length', 'inp-loose-post-bp-mark', 'inp-loose-post-bp-qiw-type', 'inp-loose-post-bp-width', 'inp-loose-post-bp-height', 'inp-loose-post-bp-thick', 'inp-loose-post-bp-hole-dia', 'inp-loose-post-bp-corner-margin', 'inp-loose-post-offset-x', 'inp-loose-post-offset-y', 'inp-loose-post-include-bp'].forEach(id => {
+        const lpQtyEl = document.getElementById('inp-loose-post-qty');
+        if (lpQtyEl) {
+            lpQtyEl.addEventListener('input', () => {
+                loosePostConfig.qtyManual = true;
+                saveLoosePostInputs();
+            });
+        }
+
+        ['inp-loose-post-drawing-no', 'inp-loose-post-custom-shape', 'inp-loose-post-custom-spec', 'inp-loose-post-length', 'inp-loose-post-bp-mark', 'inp-loose-post-bp-qiw-type', 'inp-loose-post-bp-width', 'inp-loose-post-bp-height', 'inp-loose-post-bp-thick', 'inp-loose-post-bp-hole-dia', 'inp-loose-post-bp-corner-margin', 'inp-loose-post-offset-x', 'inp-loose-post-offset-y', 'inp-loose-post-include-bp'].forEach(id => {
             const inp = document.getElementById(id);
             if (inp) {
                 const eventName = (inp.type === 'checkbox' || inp.tagName === 'SELECT') ? 'change' : 'input';
@@ -6183,7 +6400,8 @@ function initApp() {
         if (!infillSheetConfig) {
             infillSheetConfig = {
                 drawingNo: '',
-                qty: 1,
+                qty: 2 * getGateAssemblyQty(),
+                qtyManual: false,
                 infillType: v.meshType === 'wwm' ? 'wwm' : 'xf',
                 width: 18.0,
                 height: 69.0,
@@ -6195,6 +6413,7 @@ function initApp() {
                 pieceMark: ''
             };
         }
+        syncAdvanceFeatureDefaultQtys();
 
         const topH = v.topH || 2.0;
         const botH = v.botH || 2.0;
@@ -6228,7 +6447,7 @@ function initApp() {
                 <div class="inputs-subgrid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                     <div class="input-group">
                         <label>Quantity</label>
-                        <input type="number" id="inp-infill-sheet-qty" value="${infillSheetConfig.qty || 1}" min="1" step="1">
+                        <input type="number" id="inp-infill-sheet-qty" value="${infillSheetConfig.qty || (2 * getGateAssemblyQty())}" min="1" step="1">
                     </div>
                     <div class="input-group">
                         <label>Piece Mark</label>
@@ -6300,7 +6519,7 @@ function initApp() {
             </div>
         `;
 
-        dynamicInputs.innerHTML = html;
+        renderSubModeHtml(html);
 
         const closeBtn = document.getElementById('btn-infill-sheet-close');
         if (closeBtn) {
@@ -6319,7 +6538,7 @@ function initApp() {
             const dwgInp = document.getElementById('inp-infill-sheet-drawing-no');
             if (dwgInp) infillSheetConfig.drawingNo = dwgInp.value.trim();
             const qtyInp = document.getElementById('inp-infill-sheet-qty');
-            if (qtyInp) infillSheetConfig.qty = parseInt(qtyInp.value) || 1;
+            if (qtyInp) infillSheetConfig.qty = parseInt(qtyInp.value, 10) || (2 * getGateAssemblyQty());
             const markInp = document.getElementById('inp-infill-sheet-mark');
             if (markInp) infillSheetConfig.pieceMark = markInp.value.trim();
             const typeInp = document.getElementById('inp-infill-sheet-type');
@@ -6369,7 +6588,15 @@ function initApp() {
             });
         }
 
-        ['inp-infill-sheet-drawing-no', 'inp-infill-sheet-qty', 'inp-infill-sheet-mark', 'inp-infill-sheet-width', 'inp-infill-sheet-height', 'inp-infill-sheet-xf-opening', 'inp-infill-sheet-xf-gauge', 'inp-infill-sheet-wwm-open-w', 'inp-infill-sheet-wwm-open-h', 'inp-infill-sheet-wwm-wire'].forEach(id => {
+        const infillQtyEl = document.getElementById('inp-infill-sheet-qty');
+        if (infillQtyEl) {
+            infillQtyEl.addEventListener('input', () => {
+                infillSheetConfig.qtyManual = true;
+                saveInfillSheetInputs();
+            });
+        }
+
+        ['inp-infill-sheet-drawing-no', 'inp-infill-sheet-mark', 'inp-infill-sheet-width', 'inp-infill-sheet-height', 'inp-infill-sheet-xf-opening', 'inp-infill-sheet-xf-gauge', 'inp-infill-sheet-wwm-open-w', 'inp-infill-sheet-wwm-open-h', 'inp-infill-sheet-wwm-wire'].forEach(id => {
             const inp = document.getElementById(id);
             if (inp) {
                 const ev = (inp.tagName === 'SELECT' || inp.type === 'checkbox') ? 'change' : 'input';
@@ -6388,7 +6615,8 @@ function initApp() {
         if (!stopperConfig) {
             stopperConfig = {
                 drawingNo: '',
-                qty: 1,
+                qty: 1 * getGateAssemblyQty(),
+                qtyManual: false,
                 pieceMark: '',
                 description: 'QGS1',
                 angleSize: 'L4x4x1/4',
@@ -6399,6 +6627,7 @@ function initApp() {
                 rodDia: 0.5
             };
         }
+        syncAdvanceFeatureDefaultQtys();
 
         const dwgVal = stopperConfig.drawingNo || stopperSheet.drawingNo || '59';
         const cleanNo = dwgVal.toUpperCase().replace(/[^A-Z0-9]/g, '') || '59';
@@ -6424,7 +6653,7 @@ function initApp() {
                 <div class="inputs-subgrid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                     <div class="input-group">
                         <label>Quantity</label>
-                        <input type="number" id="inp-stopper-qty" value="${stopperConfig.qty || 1}" min="1" step="1">
+                        <input type="number" id="inp-stopper-qty" value="${stopperConfig.qty || (1 * getGateAssemblyQty())}" min="1" step="1">
                     </div>
                     <div class="input-group">
                         <label>Piece Mark</label>
@@ -6467,7 +6696,7 @@ function initApp() {
             </div>
         `;
 
-        dynamicInputs.innerHTML = html;
+        renderSubModeHtml(html);
 
         const closeBtn = document.getElementById('btn-stopper-close');
         if (closeBtn) {
@@ -6486,7 +6715,7 @@ function initApp() {
             const dwgInp = document.getElementById('inp-stopper-drawing-no');
             if (dwgInp) stopperConfig.drawingNo = dwgInp.value.trim();
             const qtyInp = document.getElementById('inp-stopper-qty');
-            if (qtyInp) stopperConfig.qty = parseInt(qtyInp.value) || 1;
+            if (qtyInp) stopperConfig.qty = parseInt(qtyInp.value, 10) || (1 * getGateAssemblyQty());
             const markInp = document.getElementById('inp-stopper-mark');
             if (markInp) stopperConfig.pieceMark = markInp.value.trim();
             const descInp = document.getElementById('inp-stopper-desc');
@@ -6506,7 +6735,15 @@ function initApp() {
             }
         };
 
-        ['inp-stopper-drawing-no', 'inp-stopper-qty', 'inp-stopper-mark', 'inp-stopper-desc', 'inp-stopper-angle-size', 'inp-stopper-angle-len', 'inp-stopper-rod-dia'].forEach(id => {
+        const stopperQtyEl = document.getElementById('inp-stopper-qty');
+        if (stopperQtyEl) {
+            stopperQtyEl.addEventListener('input', () => {
+                stopperConfig.qtyManual = true;
+                saveStopperInputs();
+            });
+        }
+
+        ['inp-stopper-drawing-no', 'inp-stopper-mark', 'inp-stopper-desc', 'inp-stopper-angle-size', 'inp-stopper-angle-len', 'inp-stopper-rod-dia'].forEach(id => {
             const inp = document.getElementById(id);
             if (inp) {
                 const ev = (inp.tagName === 'SELECT' || inp.type === 'checkbox') ? 'change' : 'input';
@@ -6525,7 +6762,8 @@ function initApp() {
         if (!panicBarPlateConfig) {
             panicBarPlateConfig = {
                 drawingNo: '',
-                qty: 1,
+                qty: 1 * getGateAssemblyQty(),
+                qtyManual: false,
                 pieceMark: '',
                 width: 8.0,
                 length: 24.0,
@@ -6535,6 +6773,7 @@ function initApp() {
                 remark: 'PANIC BAR PLATE'
             };
         }
+        syncAdvanceFeatureDefaultQtys();
 
         const dwgVal = panicBarPlateConfig.drawingNo || panicBarSheet.drawingNo || '60';
         const cleanNo = dwgVal.toUpperCase().replace(/[^A-Z0-9]/g, '') || '60';
@@ -6560,7 +6799,7 @@ function initApp() {
                 <div class="inputs-subgrid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                     <div class="input-group">
                         <label>Quantity</label>
-                        <input type="number" id="inp-panic-bar-qty" value="${panicBarPlateConfig.qty || 1}" min="1" step="1">
+                        <input type="number" id="inp-panic-bar-qty" value="${panicBarPlateConfig.qty || (1 * getGateAssemblyQty())}" min="1" step="1">
                     </div>
                     <div class="input-group">
                         <label>Piece Mark</label>
@@ -6609,7 +6848,7 @@ function initApp() {
             </div>
         `;
 
-        dynamicInputs.innerHTML = html;
+        renderSubModeHtml(html);
 
         const btnClose = document.getElementById('btn-panic-bar-close');
         if (btnClose) {
@@ -6635,7 +6874,7 @@ function initApp() {
             const descInp = document.getElementById('inp-panic-bar-desc');
 
             if (dwgInp) panicBarPlateConfig.drawingNo = dwgInp.value.trim();
-            if (qtyInp) panicBarPlateConfig.qty = parseInt(qtyInp.value) || 1;
+            if (qtyInp) panicBarPlateConfig.qty = parseInt(qtyInp.value, 10) || (1 * getGateAssemblyQty());
             if (markInp) panicBarPlateConfig.pieceMark = markInp.value.trim();
             if (widthInp) panicBarPlateConfig.width = parseFloat(widthInp.value) || 8.0;
             if (lengthInp) panicBarPlateConfig.length = parseFloat(lengthInp.value) || 24.0;
@@ -6656,7 +6895,15 @@ function initApp() {
             }
         };
 
-        ['inp-panic-bar-drawing-no', 'inp-panic-bar-qty', 'inp-panic-bar-mark', 'inp-panic-bar-width', 'inp-panic-bar-length', 'inp-panic-bar-thick', 'inp-panic-bar-grade', 'inp-panic-bar-desc'].forEach(id => {
+        const pbQtyEl = document.getElementById('inp-panic-bar-qty');
+        if (pbQtyEl) {
+            pbQtyEl.addEventListener('input', () => {
+                panicBarPlateConfig.qtyManual = true;
+                savePanicBarInputs();
+            });
+        }
+
+        ['inp-panic-bar-drawing-no', 'inp-panic-bar-mark', 'inp-panic-bar-width', 'inp-panic-bar-length', 'inp-panic-bar-thick', 'inp-panic-bar-grade', 'inp-panic-bar-desc'].forEach(id => {
             const inp = document.getElementById(id);
             if (inp) {
                 const ev = (inp.tagName === 'SELECT' || inp.type === 'checkbox') ? 'change' : 'input';
@@ -6669,7 +6916,7 @@ function initApp() {
     // --- Core Functions ---
 
 
-    function updateInputs() {
+    function updateInputs(forceRebuild = false) {
         if (activeSubMode === 'basePlate') {
             renderBasePlateEditor();
             return;
@@ -6691,8 +6938,21 @@ function initApp() {
             return;
         }
 
+        const subContainer = getSubModeEditorContainer();
+        if (subContainer) {
+            subContainer.style.display = 'none';
+            subContainer.innerHTML = '';
+        }
+        if (dynamicInputs) {
+            dynamicInputs.style.display = '';
+        }
 
         const cat = shapeCategory.value;
+        if (!forceRebuild && lastRenderedCategory === cat && dynamicInputs && dynamicInputs.children.length > 0) {
+            renderCurrentCAD();
+            return;
+        }
+        lastRenderedCategory = cat;
 
 
         // Define helper functions at the top of updateInputs so they are available to all categories (e.g. rail_catalog, fence, rails_gates)
@@ -8224,6 +8484,20 @@ function initApp() {
                             </button>
                         </div>
                         <select id="inp-gateFrameSize"></select>
+                        <div id="grp-custom-gateFrame" class="hidden" style="display: grid; grid-template-columns: 115px 1fr; gap: 6px; margin-top: 6px;">
+                            <select id="inp-gateFrameCustomShape">
+                                <option value="HSS" selected>HSS Tubing</option>
+                                <option value="PIPE">Pipe</option>
+                                <option value="L">Angle (L)</option>
+                                <option value="C">Channel (C)</option>
+                                <option value="CBAR">C-Bar</option>
+                                <option value="FB">Flat Bar (FB)</option>
+                                <option value="PL">Plate (PL)</option>
+                                <option value="SQ">Square Bar</option>
+                                <option value="W">W-Beam</option>
+                            </select>
+                            <input type="text" id="inp-gateFrameCustomSpec" value="2x2x11GA" placeholder="e.g. 2x2x11GA" />
+                        </div>
                      </div>`;
 
             if (isTrashGate) {
@@ -8338,9 +8612,22 @@ function initApp() {
                             <select id="inp-midRailSize"></select>
                          </div>`;
 
-                html += `<div id="grp-midRailH" class="input-group hidden">
-                            <label>Mid Runner Custom Dim (in)</label>
-                            <input type="number" id="inp-midRailH" value="1.5" step="0.01">
+                html += `<div id="grp-midRailH" class="input-group hidden" style="grid-column: span 2;">
+                            <label style="color: #00d4ff; font-weight: 600;">Mid Runner Custom Shape & Dimensions</label>
+                            <div style="display: grid; grid-template-columns: 115px 1fr; gap: 6px;">
+                                <select id="inp-midRailCustomShape">
+                                    <option value="HSS" selected>HSS Tubing</option>
+                                    <option value="PIPE">Pipe</option>
+                                    <option value="L">Angle (L)</option>
+                                    <option value="C">Channel (C)</option>
+                                    <option value="CBAR">C-Bar</option>
+                                    <option value="FB">Flat Bar (FB)</option>
+                                    <option value="PL">Plate (PL)</option>
+                                    <option value="SQ">Square Bar</option>
+                                    <option value="W">W-Beam</option>
+                                </select>
+                                <input type="text" id="inp-midRailCustomSpec" value="1.5x1.5x11GA" placeholder="e.g. 1.5x1.5x11GA" />
+                            </div>
                          </div>`;
 
                 html += `<div id="grp-midRailGap" class="input-group hidden">
@@ -8362,12 +8649,22 @@ function initApp() {
                             <select id="inp-picketSize"></select>
                          </div>`;
 
-                html += `<div id="grp-picketW" class="input-group hidden">
-                            <label>Vertical Picket Custom Dim (in)</label>
-                            <input type="number" id="inp-picketW" value="0.75" step="0.01">
-                         </div>`;
-
                 html += generateNumInput('Picket Spacing (in)', 'picketSpacing', 4.0);
+
+                html += `<div id="grp-picketW" class="input-group hidden" style="grid-column: span 2;">
+                            <label style="color: #00d4ff; font-weight: 600;">Vertical Picket Custom Shape & Dimensions</label>
+                            <div style="display: grid; grid-template-columns: 115px 1fr; gap: 6px;">
+                                <select id="inp-picketCustomShape">
+                                    <option value="HSS" selected>HSS Tubing</option>
+                                    <option value="SQ">Square Bar</option>
+                                    <option value="PIPE">Pipe / Round</option>
+                                    <option value="FB">Flat Bar (FB)</option>
+                                    <option value="L">Angle (L)</option>
+                                    <option value="C">Channel (C)</option>
+                                </select>
+                                <input type="text" id="inp-picketCustomSpec" value="3/4x3/4x16GA" placeholder="e.g. 3/4x3/4x16GA or 1/2x1/2" />
+                            </div>
+                         </div>`;
 
                 // 4. Puppy Pickets (placed directly after the Vertical Picket inputs ONLY for dog park gate!)
                 const isDogParkGate = (subcatElem && subcatElem.value === 'dog_park_gate');
@@ -8430,6 +8727,33 @@ function initApp() {
                                 <option value="far">Far Side / Back Side (F/S)</option>
                             </select>
                           </div>`;
+                html += `</div>`;
+
+                // 5B. Panic Bar Plate
+                html += `<div id="grp-railsgates-panicbarplate-section" style="grid-column: span 2; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 12px;">`;
+                html += generateSelectInput('Panic Bar Plate', 'panicBarPlate', [
+                    { val: 'none', lbl: 'None' },
+                    { val: 'PL1/8', lbl: 'PL 1/8" (0.125")' },
+                    { val: 'PL3/16', lbl: 'PL 3/16" (0.1875")' },
+                    { val: 'PL1/4', lbl: 'PL 1/4" (0.25")' },
+                    { val: 'PL5/16', lbl: 'PL 5/16" (0.3125")' },
+                    { val: 'PL3/8', lbl: 'PL 3/8" (0.375")' },
+                    { val: 'PL1/2', lbl: 'PL 1/2" (0.5")' },
+                    { val: 'PL10GA', lbl: 'PL 10GA (0.1345")' },
+                    { val: 'PL11GA', lbl: 'PL 11GA (0.1196")' },
+                    { val: 'PL12GA', lbl: 'PL 12GA (0.1046")' },
+                    { val: 'PL14GA', lbl: 'PL 14GA (0.0747")' },
+                    { val: 'PL16GA', lbl: 'PL 16GA (0.0598")' }
+                ], 'none');
+
+                html += `<div id="grp-panicBarPlateW" class="input-group hidden">
+                            <label>Panic Bar Plate Width (in)</label>
+                            <input type="number" id="inp-panicBarPlateW" value="10.0" step="0.1" min="1">
+                         </div>`;
+                html += `<div id="grp-panicBarPlateGap" class="input-group hidden">
+                            <label>Panic Bar Plate Gap (Bottom to Center, in)</label>
+                            <input type="number" id="inp-panicBarPlateGap" value="36.0" step="0.1" min="1">
+                         </div>`;
                 html += `</div>`;
 
                 // 6. Mesh Section
@@ -8788,136 +9112,151 @@ function initApp() {
 
 
                 // Sync main Gate Frame selector to the 4 sides
-
-
                 const gateFrameSelect = document.getElementById('inp-gateFrameSize');
+                const gateFrameCustomGrp = document.getElementById('grp-custom-gateFrame');
+                const gateFrameCustomShape = document.getElementById('inp-gateFrameCustomShape');
+                const gateFrameCustomSpec = document.getElementById('inp-gateFrameCustomSpec');
 
-
-                if (gateFrameSelect) {
-
-
-                    const syncFrameSides = () => {
-
-
-                        const val = gateFrameSelect.value;
-
-
-                        ['leftPostSize', 'rightPostSize', 'topRailSize', 'botRailSize'].forEach(sideId => {
-
-
-                            const sideSel = document.getElementById('inp-' + sideId);
-
-
-                            if (sideSel) {
-
-
-                                sideSel.value = val;
-
-
-                            }
-
-
-                        });
-
-
-                    };
-
-
-                    gateFrameSelect.addEventListener('change', () => {
-
-
-                        syncFrameSides();
-
-
-                        renderCurrentCAD();
-
-
-                    });
-
-
-                    syncFrameSides();
-
-
-                }
-
-
-                // Modal pop-up customize events
-
-
-                const customizeBtn = document.getElementById('btn-customize-frame');
-
-
-                const customizeLbl = document.getElementById('lbl-gate-frame');
-
-
-                const frameModal = document.getElementById('gate-frame-modal');
-
-
-                const openFrameModal = (e) => {
-
-
-                    e.preventDefault();
-
-
-                    if (frameModal) frameModal.classList.remove('hidden');
-
-
+                const updateSideCustomGroupVisibility = (sideId) => {
+                    const sideSel = document.getElementById('inp-' + sideId);
+                    const sideGrp = document.getElementById('grp-custom-' + sideId);
+                    if (sideSel && sideGrp) {
+                        if (sideSel.value === 'CUSTOM') sideGrp.classList.remove('hidden');
+                        else sideGrp.classList.add('hidden');
+                    }
                 };
 
+                const syncFrameCustomSpecsToSides = () => {
+                    const shapeVal = gateFrameCustomShape ? gateFrameCustomShape.value : 'HSS';
+                    const specVal = gateFrameCustomSpec ? gateFrameCustomSpec.value : '2x2x11GA';
+                    ['leftPostSize', 'rightPostSize', 'topRailSize', 'botRailSize'].forEach(sideId => {
+                        const sidePrefix = sideId.replace(/Size$/, '');
+                        const sShape = document.getElementById('inp-' + sidePrefix + 'CustomShape');
+                        const sSpec = document.getElementById('inp-' + sidePrefix + 'CustomSpec');
+                        if (sShape) sShape.value = shapeVal;
+                        if (sSpec) sSpec.value = specVal;
+                    });
+                };
+
+                if (gateFrameSelect) {
+                    const syncFrameSides = () => {
+                        const val = gateFrameSelect.value;
+                        if (gateFrameCustomGrp) {
+                            if (val === 'CUSTOM') gateFrameCustomGrp.classList.remove('hidden');
+                            else gateFrameCustomGrp.classList.add('hidden');
+                        }
+                        ['leftPostSize', 'rightPostSize', 'topRailSize', 'botRailSize'].forEach(sideId => {
+                            const sideSel = document.getElementById('inp-' + sideId);
+                            if (sideSel) {
+                                sideSel.value = val;
+                            }
+                            updateSideCustomGroupVisibility(sideId);
+                        });
+                        if (val === 'CUSTOM') {
+                            syncFrameCustomSpecsToSides();
+                        }
+                    };
+
+                    gateFrameSelect.addEventListener('change', () => {
+                        syncFrameSides();
+                        renderCurrentCAD();
+                        if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                        if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                    });
+
+                    syncFrameSides();
+                }
+
+                if (gateFrameCustomShape) {
+                    gateFrameCustomShape.addEventListener('change', () => {
+                        syncFrameCustomSpecsToSides();
+                        renderCurrentCAD();
+                        if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                        if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                    });
+                }
+                if (gateFrameCustomSpec) {
+                    gateFrameCustomSpec.addEventListener('input', () => {
+                        syncFrameCustomSpecsToSides();
+                        renderCurrentCAD();
+                        if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                    });
+                    gateFrameCustomSpec.addEventListener('change', () => {
+                        syncFrameCustomSpecsToSides();
+                        renderCurrentCAD();
+                        if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                        if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                    });
+                }
+
+                ['leftPostSize', 'rightPostSize', 'topRailSize', 'botRailSize'].forEach(sideId => {
+                    const sidePrefix = sideId.replace(/Size$/, '');
+                    const sideSel = document.getElementById('inp-' + sideId);
+                    const sShape = document.getElementById('inp-' + sidePrefix + 'CustomShape');
+                    const sSpec = document.getElementById('inp-' + sidePrefix + 'CustomSpec');
+                    if (sideSel) {
+                        sideSel.addEventListener('change', () => {
+                            updateSideCustomGroupVisibility(sideId);
+                            renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                            if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                        });
+                    }
+                    if (sShape) {
+                        sShape.addEventListener('change', () => {
+                            renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                            if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                        });
+                    }
+                    if (sSpec) {
+                        sSpec.addEventListener('input', () => {
+                            renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                        });
+                        sSpec.addEventListener('change', () => {
+                            renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                            if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                        });
+                    }
+                });
+
+                // Modal pop-up customize events
+                const customizeBtn = document.getElementById('btn-customize-frame');
+                const customizeLbl = document.getElementById('lbl-gate-frame');
+                const frameModal = document.getElementById('gate-frame-modal');
+
+                const openFrameModal = (e) => {
+                    e.preventDefault();
+                    ['leftPostSize', 'rightPostSize', 'topRailSize', 'botRailSize'].forEach(updateSideCustomGroupVisibility);
+                    if (frameModal) frameModal.classList.remove('hidden');
+                };
 
                 if (customizeBtn) {
-
-
                     customizeBtn.addEventListener('click', openFrameModal);
-
-
                 }
-
 
                 if (customizeLbl) {
-
-
                     customizeLbl.addEventListener('click', openFrameModal);
-
-
                 }
-
 
                 const closeFrameModalBtn = document.getElementById('close-frame-modal');
-
-
                 if (closeFrameModalBtn && frameModal) {
-
-
                     closeFrameModalBtn.addEventListener('click', () => {
-
-
                         frameModal.classList.add('hidden');
-
-
                     });
-
-
                 }
-
 
                 const saveFrameCustomBtn = document.getElementById('btn-save-frame-custom');
-
-
                 if (saveFrameCustomBtn && frameModal) {
-
-
                     saveFrameCustomBtn.addEventListener('click', () => {
-
-
                         frameModal.classList.add('hidden');
-
-
+                        renderCurrentCAD();
+                        if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                        if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
                     });
-
-
                 }
-
 
                 const setupMidRailToggle = () => {
                     const midTypeSelect = document.getElementById('inp-midRailType');
@@ -8927,6 +9266,8 @@ function initApp() {
                     const midJointGroup = document.getElementById('grp-picketMidJoint');
                     const midJointSelect = document.getElementById('inp-picketMidJoint');
                     const midCustomGroup = document.getElementById('grp-midRailH');
+                    const midCustomShape = document.getElementById('inp-midRailCustomShape');
+                    const midCustomSpec = document.getElementById('inp-midRailCustomSpec');
 
                     const populateMidSizes = () => {
                         if (!midSelect) return;
@@ -8940,7 +9281,6 @@ function initApp() {
                             midSelect.value = 'CUSTOM';
                             if (midCustomGroup) midCustomGroup.classList.remove('hidden');
                         } else {
-                            if (midCustomGroup) midCustomGroup.classList.add('hidden');
                             const shapesKey = (type === 'angle' || type === 'angles') ? 'angles' : (type === 'channel' ? 'channel' : type);
                             const shapes = (SHAPES_DB[shapesKey] || SHAPES_DB['hss_rect'] || []);
                             let optHtml = `<option value="none">None</option>`;
@@ -8958,6 +9298,10 @@ function initApp() {
                             } else if (shapes.length > 0) {
                                 midSelect.value = shapes[0].id;
                             }
+                            if (midCustomGroup) {
+                                if (midSelect.value === 'CUSTOM') midCustomGroup.classList.remove('hidden');
+                                else midCustomGroup.classList.add('hidden');
+                            }
                         }
                     };
 
@@ -8971,6 +9315,11 @@ function initApp() {
                             if (active) midJointGroup.classList.remove('hidden');
                             else midJointGroup.classList.add('hidden');
                         }
+                        if (midCustomGroup) {
+                            const isCustomMid = (midTypeSelect && midTypeSelect.value === 'custom') || (midSelect && midSelect.value === 'CUSTOM');
+                            if (isCustomMid) midCustomGroup.classList.remove('hidden');
+                            else midCustomGroup.classList.add('hidden');
+                        }
                     };
 
                     if (midTypeSelect) {
@@ -8978,6 +9327,8 @@ function initApp() {
                             populateMidSizes();
                             updateVisibility();
                             renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                            if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
                         });
                     }
 
@@ -8985,6 +9336,28 @@ function initApp() {
                         midSelect.addEventListener('change', () => {
                             updateVisibility();
                             renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                            if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                        });
+                    }
+
+                    if (midCustomShape) {
+                        midCustomShape.addEventListener('change', () => {
+                            renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                            if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                        });
+                    }
+
+                    if (midCustomSpec) {
+                        midCustomSpec.addEventListener('input', () => {
+                            renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                        });
+                        midCustomSpec.addEventListener('change', () => {
+                            renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                            if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
                         });
                     }
 
@@ -9004,8 +9377,53 @@ function initApp() {
                     }
                 };
 
-
                 setupMidRailToggle();
+
+                const setupPicketCustomToggle = () => {
+                    const picketSelect = document.getElementById('inp-picketSize');
+                    const picketCustomGrp = document.getElementById('grp-picketW');
+                    const picketCustomShape = document.getElementById('inp-picketCustomShape');
+                    const picketCustomSpec = document.getElementById('inp-picketCustomSpec');
+                    if (!picketSelect) return;
+
+                    const updatePicketVis = () => {
+                        if (picketCustomGrp) {
+                            if (picketSelect.value === 'CUSTOM') picketCustomGrp.classList.remove('hidden');
+                            else picketCustomGrp.classList.add('hidden');
+                        }
+                    };
+
+                    picketSelect.addEventListener('change', () => {
+                        updatePicketVis();
+                        renderCurrentCAD();
+                        if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                        if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                    });
+
+                    if (picketCustomShape) {
+                        picketCustomShape.addEventListener('change', () => {
+                            renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                            if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                        });
+                    }
+
+                    if (picketCustomSpec) {
+                        picketCustomSpec.addEventListener('input', () => {
+                            renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                        });
+                        picketCustomSpec.addEventListener('change', () => {
+                            renderCurrentCAD();
+                            if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                            if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                        });
+                    }
+
+                    updatePicketVis();
+                };
+
+                setupPicketCustomToggle();
 
 
                 setupBasePlateProfile();
@@ -9262,6 +9680,51 @@ function initApp() {
 
                 setupKickPlateToggle();
 
+                const setupPanicBarPlateToggle = () => {
+                    const pbSelect = document.getElementById('inp-panicBarPlate');
+                    const gW = document.getElementById('grp-panicBarPlateW');
+                    const inpW = document.getElementById('inp-panicBarPlateW');
+                    const gGap = document.getElementById('grp-panicBarPlateGap');
+                    const inpGap = document.getElementById('inp-panicBarPlateGap');
+                    if (!pbSelect) return;
+
+                    const updateVisibility = () => {
+                        const val = pbSelect.value;
+                        const active = (val && val !== 'none');
+                        if (active) {
+                            if (gW) gW.classList.remove('hidden');
+                            if (gGap) gGap.classList.remove('hidden');
+                        } else {
+                            if (gW) gW.classList.add('hidden');
+                            if (gGap) gGap.classList.add('hidden');
+                        }
+                    };
+
+                    pbSelect.addEventListener('change', () => {
+                        updateVisibility();
+                        renderCurrentCAD();
+                        if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                        if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                    });
+
+                    [inpW, inpGap].forEach(inp => {
+                        if (inp) {
+                            inp.addEventListener('input', () => {
+                                renderCurrentCAD();
+                                if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                            });
+                            inp.addEventListener('change', () => {
+                                renderCurrentCAD();
+                                if (typeof updateBOMPreview === 'function') updateBOMPreview();
+                                if (isLivePdfMode && typeof triggerLivePdfRefresh === 'function') triggerLivePdfRefresh();
+                            });
+                        }
+                    });
+
+                    updateVisibility();
+                };
+
+                setupPanicBarPlateToggle();
 
                 const setupPuppyPicketsToggle = () => {
 
@@ -9586,49 +10049,29 @@ function initApp() {
 
 
         if (typeof dynamicInputs !== 'undefined' && dynamicInputs) {
-
-
             dynamicInputs.querySelectorAll('input').forEach(inp => {
-
-
-                if (inp.type === 'checkbox') vals[inp.id.replace('inp-', '')] = inp.checked ? 'yes' : 'no';
-
-
-                else vals[inp.id.replace('inp-', '')] = parseFloat(inp.value) || 0;
-
-
+                const key = inp.id.replace('inp-', '');
+                if (inp.type === 'checkbox') vals[key] = inp.checked ? 'yes' : 'no';
+                else if (key.endsWith('CustomSpec')) vals[key] = inp.value.trim();
+                else vals[key] = parseFloat(inp.value) || 0;
             });
-
 
             dynamicInputs.querySelectorAll('select').forEach(sel => {
-
-
                 vals[sel.id.replace('inp-', '')] = sel.value;
-
-
             });
-
-
         }
-
 
         const frameModal = document.getElementById('gate-frame-modal');
-
-
         if (frameModal) {
-
-
             frameModal.querySelectorAll('select').forEach(sel => {
-
-
                 vals[sel.id.replace('inp-', '')] = sel.value;
-
-
             });
-
-
+            frameModal.querySelectorAll('input').forEach(inp => {
+                const key = inp.id.replace('inp-', '');
+                if (key.endsWith('CustomSpec')) vals[key] = inp.value.trim();
+                else vals[key] = parseFloat(inp.value) || 0;
+            });
         }
-
 
         const parseSlopeVal = (slopeVal) => {
 
@@ -9810,13 +10253,66 @@ function initApp() {
 
             vals.leftPostType = (vals.leftPostSize && vals.leftPostSize !== 'none') ? 'hss_rect' : 'none';
             vals.rightPostType = (vals.rightPostSize && vals.rightPostSize !== 'none') ? 'hss_rect' : 'none';
-
-
             vals.topRailType = (vals.topRailSize && vals.topRailSize !== 'none') ? 'hss_rect' : 'none';
-
-
             vals.botRailType = (vals.botRailSize && vals.botRailSize !== 'none') ? 'hss_rect' : 'none';
 
+            // Parse custom shape & dimension specs for the 4 frame sides, mid runner, and vertical picket
+            const defaultFrameShape = vals.gateFrameCustomShape || 'HSS';
+            const defaultFrameSpec = vals.gateFrameCustomSpec || '2x2x11GA';
+
+            const lpParsed = parseCustomMemberSpec(vals.leftPostCustomShape || vals.leftPostSizeCustomShape || defaultFrameShape, vals.leftPostCustomSpec || vals.leftPostSizeCustomSpec || defaultFrameSpec, 2.0, 0.1196);
+            vals.leftPostW = lpParsed.w || 2.0;
+            vals.leftPostH = lpParsed.h || lpParsed.w || 2.0;
+            vals.leftPostCustomDesc = lpParsed.desc;
+            vals.leftPostCustomShape = lpParsed.shape;
+            vals.leftPostCustomFbomDesc = lpParsed.fbomDesc;
+            vals.leftPostCustomT = lpParsed.t || 0.1196;
+            vals.leftPostCustomGrade = lpParsed.grade || 'A500';
+
+            const rpParsed = parseCustomMemberSpec(vals.rightPostCustomShape || vals.rightPostSizeCustomShape || defaultFrameShape, vals.rightPostCustomSpec || vals.rightPostSizeCustomSpec || defaultFrameSpec, 2.0, 0.1196);
+            vals.rightPostW = rpParsed.w || 2.0;
+            vals.rightPostH = rpParsed.h || rpParsed.w || 2.0;
+            vals.rightPostCustomDesc = rpParsed.desc;
+            vals.rightPostCustomShape = rpParsed.shape;
+            vals.rightPostCustomFbomDesc = rpParsed.fbomDesc;
+            vals.rightPostCustomT = rpParsed.t || 0.1196;
+            vals.rightPostCustomGrade = rpParsed.grade || 'A500';
+
+            const trParsed = parseCustomMemberSpec(vals.topRailCustomShape || vals.topRailSizeCustomShape || defaultFrameShape, vals.topRailCustomSpec || vals.topRailSizeCustomSpec || defaultFrameSpec, 2.0, 0.1196);
+            vals.topRailH = trParsed.w || 2.0;
+            vals.topRailW = trParsed.h || trParsed.w || 2.0;
+            vals.topRailCustomDesc = trParsed.desc;
+            vals.topRailCustomShape = trParsed.shape;
+            vals.topRailCustomFbomDesc = trParsed.fbomDesc;
+            vals.topRailCustomT = trParsed.t || 0.1196;
+            vals.topRailCustomGrade = trParsed.grade || 'A500';
+
+            const brParsed = parseCustomMemberSpec(vals.botRailCustomShape || vals.botRailSizeCustomShape || defaultFrameShape, vals.botRailCustomSpec || vals.botRailSizeCustomSpec || defaultFrameSpec, 2.0, 0.1196);
+            vals.botRailH = brParsed.w || 2.0;
+            vals.botRailW = brParsed.h || brParsed.w || 2.0;
+            vals.botRailCustomDesc = brParsed.desc;
+            vals.botRailCustomShape = brParsed.shape;
+            vals.botRailCustomFbomDesc = brParsed.fbomDesc;
+            vals.botRailCustomT = brParsed.t || 0.1196;
+            vals.botRailCustomGrade = brParsed.grade || 'A500';
+
+            const mrParsed = parseCustomMemberSpec(vals.midRailCustomShape || 'HSS', vals.midRailCustomSpec || '1.5x1.5x11GA', 1.5, 0.1196);
+            vals.midRailH = mrParsed.w || 1.5;
+            vals.midRailW = mrParsed.h || mrParsed.w || 1.5;
+            vals.midRailCustomDesc = mrParsed.desc;
+            vals.midRailCustomShape = mrParsed.shape;
+            vals.midRailCustomFbomDesc = mrParsed.fbomDesc;
+            vals.midRailCustomT = mrParsed.t || 0.1196;
+            vals.midRailCustomGrade = mrParsed.grade || 'A500';
+
+            const pkParsed = parseCustomMemberSpec(vals.picketCustomShape || 'HSS', vals.picketCustomSpec || '3/4x3/4x16GA', 0.75, 0.065);
+            vals.picketW = pkParsed.w || 0.75;
+            vals.picketH = pkParsed.h || pkParsed.w || 0.75;
+            vals.picketCustomDesc = pkParsed.desc;
+            vals.picketCustomShape = pkParsed.shape;
+            vals.picketCustomFbomDesc = pkParsed.fbomDesc;
+            vals.picketCustomT = pkParsed.t || 0.065;
+            vals.picketCustomGrade = pkParsed.grade || 'A500';
 
             const midRailTypeElem = (typeof document !== 'undefined') ? document.getElementById('inp-midRailType') : null;
             if (midRailTypeElem && midRailTypeElem.value) {
@@ -9906,6 +10402,15 @@ function initApp() {
 
             vals.kickPlateSide = (kpSideElem && kpSideElem.value) ? kpSideElem.value : (vals.kickPlateSide || 'near');
 
+            const pbElem = (typeof document !== 'undefined') ? document.getElementById('inp-panicBarPlate') : null;
+            vals.panicBarPlate = (pbElem && pbElem.value) ? pbElem.value : (vals.panicBarPlate || 'none');
+
+            const pbWElem = (typeof document !== 'undefined') ? document.getElementById('inp-panicBarPlateW') : null;
+            vals.panicBarPlateW = (pbWElem && pbWElem.value) ? parseFloat(pbWElem.value) : (parseFloat(vals.panicBarPlateW) || 10.0);
+
+            const pbGapElem = (typeof document !== 'undefined') ? document.getElementById('inp-panicBarPlateGap') : null;
+            vals.panicBarPlateGap = (pbGapElem && pbGapElem.value) ? parseFloat(pbGapElem.value) : (parseFloat(vals.panicBarPlateGap) || 36.0);
+
 
             vals.includeBasePlates = (vals.basePlateSize && vals.basePlateSize !== 'NONE') ? 'yes' : 'no';
 
@@ -9993,86 +10498,33 @@ function initApp() {
 
 
         const getProfileDimension = (type, size, customVal) => {
-
-
-            if (type === 'none' || size === 'NONE') return 0;
-
-
-            if (size === 'CUSTOM') return customVal;
-
-
+            if (type === 'none' || size === 'NONE' || size === 'none') return 0;
+            if (size === 'CUSTOM') return parseFloat(customVal) || 2.0;
             const shapes = SHAPES_DB[type] || [];
-
-
             const selected = shapes.find(s => s.id === size);
-
-
             if (selected) {
-
-
                 if (type === 'hss_rect') return selected.h || selected.w || 0;
-
-
                 if (type === 'hss_circ') return selected.d || 0;
-
-
                 if (type === 'w_beam') return selected.d || 0;
-
-
                 if (type === 'angles') return selected.leg2 || selected.leg1 || 0;
-
-
                 if (type === 'plate') return selected.t || 0;
-
-
             }
-
-
-            return customVal;
-
-
+            return parseFloat(customVal) || 2.0;
         };
 
-
         const getPicketDimension = (type, size, customVal) => {
-
-
-            if (type === 'none' || size === 'NONE') return 0;
-
-
-            if (size === 'CUSTOM') return customVal;
-
-
+            if (type === 'none' || size === 'NONE' || size === 'none') return 0;
+            if (size === 'CUSTOM') return parseFloat(customVal) || 2.0;
             const shapes = SHAPES_DB[type] || [];
-
-
             const selected = shapes.find(s => s.id === size);
-
-
             if (selected) {
-
-
                 if (type === 'hss_rect') return selected.w || 0;
-
-
                 if (type === 'hss_circ') return selected.d || 0;
-
-
                 if (type === 'w_beam') return selected.bf || 0;
-
-
                 if (type === 'angles') return selected.leg1 || 0;
-
-
                 if (type === 'plate') return selected.t || 0;
-
-
             }
-
-
-            return customVal;
-
-
+            return parseFloat(customVal) || 2.0;
         };
 
         const parseFractionalVal = (str) => {
@@ -11036,6 +11488,16 @@ function initApp() {
 
                 const bpH = getProfileDimension('plate', vals.basePlateSize, vals.basePlateT);
 
+                if (vals.midRailType && vals.midRailType !== 'none' && vals.kickPlate && vals.kickPlate !== 'none') {
+                    const midGapVal = (vals.midRailGap !== undefined && vals.midRailGap !== '') ? parseFloat(vals.midRailGap) : 6.0;
+                    const calcKpH = (vals.kickPlateWeld === 'outer') ? (botH + midGapVal + midH) : midGapVal;
+                    vals.kickPlateH = calcKpH;
+                    const kpHInp = document.getElementById('inp-kickPlateH');
+                    if (kpHInp && document.activeElement !== kpHInp) {
+                        kpHInp.value = calcKpH;
+                    }
+                }
+
 
                 currentModel = CadEngine.createRailsGates(
 
@@ -11159,7 +11621,10 @@ function initApp() {
                     vals.deckRetainer || 'none',
                     vals.picketMidJoint || 'through',
                     vals.maxDeckLen || 24.0,
-                    vals.maxDeckWidth || 36.0
+                    vals.maxDeckWidth || 36.0,
+                    vals.panicBarPlate || 'none',
+                    vals.panicBarPlateW !== undefined ? vals.panicBarPlateW : 10.0,
+                    vals.panicBarPlateGap !== undefined ? vals.panicBarPlateGap : 36.0
                 );
 
 
@@ -12020,86 +12485,33 @@ function initApp() {
 
 
         const getProfileDimension = (type, size, customVal) => {
-
-
-            if (type === 'none' || size === 'NONE') return 0;
-
-
-            if (size === 'CUSTOM') return customVal;
-
-
+            if (type === 'none' || size === 'NONE' || size === 'none') return 0;
+            if (size === 'CUSTOM') return parseFloat(customVal) || 2.0;
             const shapes = SHAPES_DB[type] || [];
-
-
             const selected = shapes.find(s => s.id === size);
-
-
             if (selected) {
-
-
                 if (type === 'hss_rect') return selected.h || selected.w || 0;
-
-
                 if (type === 'hss_circ') return selected.d || 0;
-
-
                 if (type === 'w_beam') return selected.d || 0;
-
-
                 if (type === 'angles') return selected.leg2 || selected.leg1 || 0;
-
-
                 if (type === 'plate') return selected.t || 0;
-
-
             }
-
-
-            return customVal;
-
-
+            return parseFloat(customVal) || 2.0;
         };
 
-
         const getPicketDimension = (type, size, customVal) => {
-
-
-            if (type === 'none' || size === 'NONE') return 0;
-
-
-            if (size === 'CUSTOM') return customVal;
-
-
+            if (type === 'none' || size === 'NONE' || size === 'none') return 0;
+            if (size === 'CUSTOM') return parseFloat(customVal) || 2.0;
             const shapes = SHAPES_DB[type] || [];
-
-
             const selected = shapes.find(s => s.id === size);
-
-
             if (selected) {
-
-
                 if (type === 'hss_rect') return selected.w || 0;
-
-
                 if (type === 'hss_circ') return selected.d || 0;
-
-
                 if (type === 'w_beam') return selected.bf || 0;
-
-
                 if (type === 'angles') return selected.leg1 || 0;
-
-
                 if (type === 'plate') return selected.t || 0;
-
-
             }
-
-
-            return customVal;
-
-
+            return parseFloat(customVal) || 2.0;
         };
 
 
@@ -12474,6 +12886,7 @@ function initApp() {
 
             const kpMark = getMark(isGates && vals.kickPlate && vals.kickPlate !== 'none');
 
+            const pbMark = getMark(isGates && vals.panicBarPlate && vals.panicBarPlate !== 'none');
 
             const bpMark = getMark(!isGates && vals.includeBasePlates === 'yes');
 
@@ -12613,6 +13026,11 @@ function initApp() {
                 addPiece(kpMark, currentModel.models.kickPlate.models.plate);
 
 
+            }
+
+            // 8B. Panic Bar Plate (if present)
+            if (pbMark && currentModel.models.panicBarPlate && currentModel.models.panicBarPlate.models && currentModel.models.panicBarPlate.models.plate) {
+                addPiece(pbMark, currentModel.models.panicBarPlate.models.plate);
             }
 
 
@@ -13281,6 +13699,8 @@ function initApp() {
 
         }
 
+        syncAdvanceFeatureDefaultQtys();
+
 
         const cleanNo = rawNo.trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || '55';
 
@@ -13679,11 +14099,13 @@ function initApp() {
     }
 
     function getAllProjectBOMItems(drawingNo, finishText, vals) {
+        syncAdvanceFeatureDefaultQtys();
         const allItems = [];
         const sheets = getProjectSheets(drawingNo);
         const v = vals || (typeof getNormalizedVals === 'function' ? getNormalizedVals() : {});
         const cleanNo = (drawingNo || '55').toUpperCase().replace(/[^A-Z0-9]/g, '') || '55';
         const mainMarkCode = cleanNo + 'M1';
+        const assemblyQty = getGateAssemblyQty();
 
         // 1. Main Gate BOM items
         const mainGateSheet = sheets.find(s => s.id === 'gate') || { drawingNo: cleanNo, mainMark: mainMarkCode };
@@ -13693,7 +14115,7 @@ function initApp() {
                 drawingNo: mainGateSheet.drawingNo,
                 mainMark: mainGateSheet.mainMark,
                 mark: item.mark,
-                qty: item.qty || 1,
+                qty: item.isSubSheetItem ? (item.qty || 1) : ((item.qty || 1) * assemblyQty),
                 shape: item.shape || 'HSS',
                 desc: item.desc || item.size || '',
                 fbomDesc: item.fbomDesc || item.desc || '',
@@ -13714,7 +14136,7 @@ function initApp() {
             const lpParams = getLoosePostParams(loosePostConfig, v);
             const lpBp = getLoosePostBasePlateParams(loosePostConfig, basePlateConfig);
             const postDwgName = lpParams.postDwgName;
-            const postQty = lpParams.qty || 1;
+            const postQty = lpParams.qty || (2 * assemblyQty);
             const pHeight = lpParams.pHeight;
             const loosePostMark = lpSheet.mainMark || `${lpSheet.cleanDrawingNo}LP`;
 
@@ -13723,11 +14145,11 @@ function initApp() {
                 mainMark: loosePostMark,
                 mark: loosePostMark,
                 qty: postQty,
-                shape: 'HSS',
+                shape: lpParams.postFbomShape || 'HSS',
                 desc: postDwgName,
-                fbomDesc: postDwgName,
+                fbomDesc: lpParams.postFbomDesc || postDwgName,
                 len: formatFraction(pHeight),
-                grade: 'A500',
+                grade: lpParams.postGrade || 'A500',
                 finish: (finishText || 'RAW').toUpperCase(),
                 remark: 'LOOSE POST',
                 category: 'POST',
@@ -13769,7 +14191,7 @@ function initApp() {
                 drawingNo: bpSheet.drawingNo,
                 mainMark: displayMark,
                 mark: displayMark,
-                qty: parseInt(bpConfig.qty) || 1,
+                qty: parseInt(bpConfig.qty, 10) || (2 * assemblyQty),
                 shape: isQiw ? 'BY' : 'PL',
                 desc: bpDesc,
                 fbomDesc: bpDesc,
@@ -13792,7 +14214,7 @@ function initApp() {
             const widthFormatted = formatFraction(infillW);
             const heightFormatted = formatFraction(infillH);
             const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : (infillSheet.mainMark || `${infillSheet.cleanDrawingNo}M1`);
-            const qty = parseInt(cfg.qty) || 1;
+            const qty = parseInt(cfg.qty, 10) || (2 * assemblyQty);
             let meshDesc = '';
             let meshRemark = '';
 
@@ -13837,7 +14259,7 @@ function initApp() {
         const stopperSheet = sheets.find(s => s.id === 'stopper');
         if (stopperSheet) {
             const cfg = (typeof stopperConfig !== 'undefined') ? stopperConfig : {};
-            const qty = parseInt(cfg.qty) || 1;
+            const qty = parseInt(cfg.qty, 10) || (1 * assemblyQty);
             const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : (stopperSheet.mainMark || `${stopperSheet.cleanDrawingNo}M1`);
             const descText = (cfg.description && cfg.description.trim()) ? cfg.description.trim() : 'QGS1';
 
@@ -13862,7 +14284,7 @@ function initApp() {
         const panicBarSheet = sheets.find(s => s.id === 'panicBarPlate');
         if (panicBarSheet) {
             const cfg = (typeof panicBarPlateConfig !== 'undefined') ? panicBarPlateConfig : {};
-            const qty = parseInt(cfg.qty) || 1;
+            const qty = parseInt(cfg.qty, 10) || (1 * assemblyQty);
             const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : (panicBarSheet.mainMark || `${panicBarSheet.cleanDrawingNo}M1`);
             const plateW = parseFloat(cfg.width || 8.0) || 8.0;
             const plateLen = parseFloat(cfg.length || 24.0) || 24.0;
@@ -13943,9 +14365,13 @@ function initApp() {
         if (hasKP) {
             const leftPostW = getDim(vals.leftPostType || 'hss_rect', vals.leftPostSize, 2.0);
             const rightPostW = getDim(vals.rightPostType || 'hss_rect', vals.rightPostSize, 2.0);
-            const kpLength = (vals.length || 60.0) - leftPostW - rightPostW;
+            const botRailH = getDim(vals.botRailType || 'hss_rect', vals.botRailSize, vals.botRailH || 2.0);
+            const midRailH = getDim(vals.midRailType || 'hss_rect', vals.midRailSize, vals.midRailH || 2.0);
+            const isOuterKP = (vals.kickPlateWeld === 'outer');
+            const kpLength = isOuterKP ? (vals.length || 60.0) : ((vals.length || 60.0) - leftPostW - rightPostW);
+            const midGapVal = (vals.midRailGap !== undefined && vals.midRailGap !== '') ? parseFloat(vals.midRailGap) : 6.0;
             const kpH = (vals.midRailType && vals.midRailType !== 'none')
-                ? (vals.kickPlateWeld === 'outer' ? parseFloat(vals.midRailGap || 6.0) : Math.max(2, parseFloat(vals.midRailGap || 6.0) - 2.0 - 2.0))
+                ? (isOuterKP ? (botRailH + midGapVal + midRailH) : midGapVal)
                 : (parseFloat(vals.kickPlateH) || 10.0);
 
             let kpPieceMark = 'f' + ((vals.drawingNo || '55').replace(/[^0-9]/g, '') || '55');
@@ -13956,6 +14382,25 @@ function initApp() {
 
             const kpModel = new makerjs.models.Rectangle(kpLength, kpH);
             addDxf(kpPieceMark, kpModel);
+        }
+
+        // 1B. Panic Bar Plate (Main Gate)
+        const rawPbVal = (vals && vals.panicBarPlate) || document.getElementById('inp-panicBarPlate')?.value;
+        const hasPB = (rawPbVal && rawPbVal !== 'none' && rawPbVal !== 'no');
+        if (hasPB) {
+            const leftPostW = getDim(vals.leftPostType || 'hss_rect', vals.leftPostSize, 2.0);
+            const rightPostW = getDim(vals.rightPostType || 'hss_rect', vals.rightPostSize, 2.0);
+            const pbLength = Math.max(1, (vals.length || 60.0) - leftPostW - rightPostW);
+            const pbW = parseFloat(vals.panicBarPlateW) || 10.0;
+
+            let pbPieceMark = 'g' + ((vals.drawingNo || '55').replace(/[^0-9]/g, '') || '55');
+            if (allBOMItems && allBOMItems.length > 0) {
+                const pbItem = allBOMItems.find(item => (item.remark && item.remark.includes('PANIC')) && item.drawingNo === (vals.drawingNo || '55'));
+                if (pbItem) pbPieceMark = pbItem.mark;
+            }
+
+            const pbModel = new makerjs.models.Rectangle(pbLength, pbW);
+            addDxf(pbPieceMark, pbModel);
         }
 
         // 2. Base Plate (Main Gate)
@@ -15072,7 +15517,7 @@ function initApp() {
                     mark: mainMarkCode,
 
 
-                    qty: 1,
+                    qty: item.isSubSheetItem ? (item.qty || 1) : 1,
 
 
                     weight: Math.round((item.weight || 0) * 10) / 10,
@@ -15096,7 +15541,7 @@ function initApp() {
             } else {
 
 
-                const key = `${normShape}_${normDesc}_${normLen}`;
+                const key = item.isSubSheetItem ? `SUB_${item.mark || ''}_${normDesc}_${normLen}` : `${normShape}_${normDesc}_${normLen}`;
 
 
                 if (otherItemsMap.has(key)) {
@@ -15171,7 +15616,9 @@ function initApp() {
         otherItemsMap.forEach(item => {
 
 
-            item.mark = String.fromCharCode(letterIndex++) + cleanDrawingNo;
+            if (!item.isSubSheetItem || !item.mark) {
+                item.mark = String.fromCharCode(letterIndex++) + cleanDrawingNo;
+            }
 
 
             const remarksArray = Array.from(item.remarksSet);
@@ -15236,6 +15683,7 @@ function initApp() {
 
     async function generateBlueprintPDF(drawingNo, fabNo, jobNo, mainMark, revision, finishText, needFBOM, jobName = 'QUALITY IRONWORKS PROJECT', gc = 'APEX BUILDERS', address = '123 STEEL WAY', cityState = 'HOUSTON, TX', drawnBy = 'ENG', checkedBy = 'QIW', isPreviewOnly = false, appendSubSheets = false) {
         window.generateBlueprintPDF = generateBlueprintPDF;
+        syncAdvanceFeatureDefaultQtys();
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF('landscape', 'mm', 'a4'); // A4 landscape: 297mm x 210mm
         const cat = shapeCategory.value;
@@ -15313,10 +15761,20 @@ function initApp() {
             const previewIframe = document.getElementById('pdf-preview-iframe');
             const btnDownloadPdf = document.getElementById('btn-download-pdf');
             const btnDownloadFbom = document.getElementById('btn-download-fbom');
+            const btnDownloadZip = document.getElementById('btn-download-zip');
+            const closePreview = document.getElementById('close-preview-modal');
 
             if (previewModal && previewIframe) {
                 previewIframe.src = pdfBlobUrl;
                 previewModal.classList.remove('hidden');
+
+                if (btnDownloadZip) {
+                    const newBtnZip = btnDownloadZip.cloneNode(true);
+                    btnDownloadZip.parentNode.replaceChild(newBtnZip, btnDownloadZip);
+                    newBtnZip.addEventListener('click', async () => {
+                        await exportProjectZipPackage(drawingNo, fabNo, jobNo, mainMark, revision, finishText, needFBOM, jobName, gc, address, cityState, drawnBy, checkedBy);
+                    });
+                }
 
                 if (btnDownloadPdf) {
                     const newBtnPdf = btnDownloadPdf.cloneNode(true);
@@ -15332,33 +15790,22 @@ function initApp() {
                     const newBtnFbom = btnDownloadFbom.cloneNode(true);
                     btnDownloadFbom.parentNode.replaceChild(newBtnFbom, btnDownloadFbom);
                     newBtnFbom.addEventListener('click', () => {
-                        if (activeSubMode === 'stopper') {
-                            const curSheet = sheets.find(s => s.id === 'stopper') || { drawingNo: '59', cleanDrawingNo: '59', mainMark: '59M1' };
-                            const stopperItems = [{
-                                mark: (stopperConfig && stopperConfig.pieceMark) ? stopperConfig.pieceMark : `${curSheet.cleanDrawingNo}M1`,
-                                qty: (stopperConfig && stopperConfig.qty) ? stopperConfig.qty : 1,
-                                desc: (stopperConfig && stopperConfig.description) ? stopperConfig.description : 'QGS1',
-                                len: '',
-                                shape: 'BY',
-                                grade: 'A36',
-                                remark: 'GATE STOPPER'
-                            }];
-                            exportCustomFBOM(stopperItems, curSheet.drawingNo, curSheet.cleanDrawingNo + 'M1', finishText);
-                        } else if (activeSubMode === 'panicBarPlate') {
-                            const curSheet = sheets.find(s => s.id === 'panicBarPlate') || { drawingNo: '60', cleanDrawingNo: '60', mainMark: '60M1' };
-                            const thickStr = formatFraction(panicBarPlateConfig.thickness || 0.25).replace(/"/g, '');
-                            const widthStr = formatFraction(panicBarPlateConfig.width || 8.0).replace(/"/g, '');
-                            const pbItems = [{
-                                mark: (panicBarPlateConfig && panicBarPlateConfig.pieceMark) ? panicBarPlateConfig.pieceMark : `${curSheet.cleanDrawingNo}M1`,
-                                qty: (panicBarPlateConfig && panicBarPlateConfig.qty) ? panicBarPlateConfig.qty : 1,
-                                desc: (panicBarPlateConfig && panicBarPlateConfig.description) ? panicBarPlateConfig.description : `PL ${thickStr}x${widthStr}`,
-                                len: formatFraction(panicBarPlateConfig.length || 24.0),
-                                shape: 'PL',
-                                grade: panicBarPlateConfig.grade || 'A36',
-                                remark: 'PANIC BAR PLATE'
-                            }];
-                            exportCustomFBOM(pbItems, curSheet.drawingNo, curSheet.cleanDrawingNo + 'M1', finishText);
-                        }
+                        const allProjItems = getAllProjectBOMItems(drawingNo, finishText, getNormalizedVals());
+                        const curSheet = sheets.find(s => s.subMode === activeSubMode);
+                        const sheetItems = curSheet ? allProjItems.filter(i => i.drawingNo === curSheet.drawingNo) : allProjItems;
+                        const itemsToExport = sheetItems.length > 0 ? sheetItems : allProjItems;
+                        const curDwg = curSheet ? curSheet.drawingNo : drawingNo;
+                        const curMainMark = curSheet ? curSheet.mainMark : (curDwg + 'M1');
+                        exportCustomFBOM(itemsToExport, curDwg, curMainMark, finishText);
+                    });
+                }
+
+                if (closePreview) {
+                    const newClose = closePreview.cloneNode(true);
+                    closePreview.parentNode.replaceChild(newClose, closePreview);
+                    newClose.addEventListener('click', () => {
+                        previewModal.classList.add('hidden');
+                        previewIframe.src = '';
                     });
                 }
             }
@@ -15809,7 +16256,9 @@ function initApp() {
             }
 
 
-            doc.addImage(pngData, 'PNG', pdfX, pdfY, drawW, drawH);
+            if (isFinite(pdfX) && isFinite(pdfY) && isFinite(drawW) && isFinite(drawH) && drawW > 0 && drawH > 0) {
+                doc.addImage(pngData, 'PNG', pdfX, pdfY, drawW, drawH);
+            }
 
 
             // --- DRAW BORDERS ---
@@ -15869,89 +16318,34 @@ function initApp() {
 
 
             // Helpers for profiles
-
-
             const getProfileDimension = (type, size, customVal) => {
-
-
-                if (type === 'none' || size === 'NONE') return 0;
-
-
-                if (size === 'CUSTOM') return customVal;
-
-
+                if (type === 'none' || size === 'NONE' || size === 'none') return 0;
+                if (size === 'CUSTOM') return parseFloat(customVal) || 2.0;
                 const shapes = SHAPES_DB[type] || [];
-
-
                 const selected = shapes.find(s => s.id === size);
-
-
                 if (selected) {
-
-
                     if (type === 'hss_rect') return selected.h || selected.w || 0;
-
-
                     if (type === 'hss_circ') return selected.d || 0;
-
-
                     if (type === 'w_beam') return selected.d || 0;
-
-
                     if (type === 'angles') return selected.leg2 || selected.leg1 || 0;
-
-
                     if (type === 'plate') return selected.t || 0;
-
-
                 }
-
-
-                return customVal;
-
-
+                return parseFloat(customVal) || 2.0;
             };
 
-
             const getPicketDimension = (type, size, customVal) => {
-
-
-                if (type === 'none' || size === 'NONE') return 0;
-
-
-                if (size === 'CUSTOM') return customVal;
-
-
+                if (type === 'none' || size === 'NONE' || size === 'none') return 0;
+                if (size === 'CUSTOM') return parseFloat(customVal) || 2.0;
                 const shapes = SHAPES_DB[type] || [];
-
-
                 const selected = shapes.find(s => s.id === size);
-
-
                 if (selected) {
-
-
                     if (type === 'hss_rect') return selected.w || 0;
-
-
                     if (type === 'hss_circ') return selected.d || 0;
-
-
                     if (type === 'w_beam') return selected.bf || 0;
-
-
                     if (type === 'angles') return selected.leg1 || 0;
-
-
                     if (type === 'plate') return selected.t || 0;
-
-
                 }
-
-
-                return customVal;
-
-
+                return parseFloat(customVal) || 2.0;
             };
 
             const parseFractionalVal = (str) => {
@@ -16296,10 +16690,10 @@ function initApp() {
             };
 
             let topMark = null, botMark = null, midMark = null, leftMark = null, rightMark = null;
-            let midPostMark = null, picketMark = null, puppyPicketMark = null, kpMark = null, bpMark = null;
+            let midPostMark = null, picketMark = null, puppyPicketMark = null, kpMark = null, pbMark = null, bpMark = null;
             let meshMark = null, fbHorizMark = null, fbVertMark = null;
             let braceMark = null, splitBraceMark = null, sidingMark = null, horizRetainerMark = null, vertRetainerMark = null;
-            let hasMesh = false, hasKickPlate = false, hasBrace = false, hasSiding = false, hasRetainers = false, strMesh = '';
+            let hasMesh = false, hasKickPlate = false, hasPanicBarPlate = false, hasBrace = false, hasSiding = false, hasRetainers = false, strMesh = '', rawPbVal = 'none';
 
 
             let leftPostW = 0, rightPostW = 0, midPostW = 0, topH = 0, botH = 0, midH = 0, pickW = 0;
@@ -16951,6 +17345,11 @@ function initApp() {
 
 
                 kpMark = getMark(hasKickPlate);
+
+                const pbElem = (typeof document !== 'undefined') ? document.getElementById('inp-panicBarPlate') : null;
+                rawPbVal = (pbElem && pbElem.value) ? pbElem.value : (vals.panicBarPlate || 'none');
+                hasPanicBarPlate = (isGates || cat === 'rails_gates') && (rawPbVal && rawPbVal !== 'none');
+                pbMark = getMark(hasPanicBarPlate);
 
 
                 meshMark = getMark(hasMesh);
@@ -17851,45 +18250,34 @@ function initApp() {
 
 
             } else if (cat === 'rails_gates') {
-
-
                 if (topMark) {
-
-
-                    const name = vals.topRailSize === 'CUSTOM' ? `HSS ${topH}x${topH}` : vals.topRailSize;
-
-
-                    const wVal = calculateWeight(vals.topRailType, vals.topRailSize, vals.length, { w: topH, h: topH, t: 0.12 }, 1);
-
-
-                    bomItems.push({ mark: topMark, qty: 1, desc: name, remark: isGates ? "TOP RUNNER" : "TOP RAIL", len: formatFraction(vals.length), weight: Math.round(wVal * 10) / 10, shape: vals.topRailType.toUpperCase(), size: name, len_dec: vals.length });
-
-
+                    const isCustom = (vals.topRailSize === 'CUSTOM');
+                    const name = isCustom ? (vals.topRailCustomDesc || `HSS ${topH}x${topH}x11GA`) : vals.topRailSize;
+                    const shapeVal = isCustom ? (vals.topRailCustomShape || 'HSS') : vals.topRailType.toUpperCase();
+                    const fbomDesc = isCustom ? (vals.topRailCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.topRailCustomGrade || 'A500') : undefined;
+                    const wVal = calculateWeight(vals.topRailType, vals.topRailSize, vals.length, { w: vals.topRailW || topH, h: topH, t: vals.topRailCustomT || 0.12 }, 1);
+                    bomItems.push({ mark: topMark, qty: 1, desc: name, fbomDesc, remark: isGates ? "TOP RUNNER" : "TOP RAIL", len: formatFraction(vals.length), weight: Math.round(wVal * 10) / 10, shape: shapeVal, size: name, len_dec: vals.length, grade: gradeVal });
                 }
-
 
                 if (botMark) {
-
-
-                    const name = vals.botRailSize === 'CUSTOM' ? `HSS ${botH}x${botH}` : vals.botRailSize;
-
-
-                    const wVal = calculateWeight(vals.botRailType, vals.botRailSize, vals.length, { w: botH, h: botH, t: 0.12 }, 1);
-
-
-                    bomItems.push({ mark: botMark, qty: 1, desc: name, remark: isGates ? "BOTTOM RUNNER" : "BOTTOM RAIL", len: formatFraction(vals.length), weight: Math.round(wVal * 10) / 10, shape: vals.botRailType.toUpperCase(), size: name, len_dec: vals.length });
-
-
+                    const isCustom = (vals.botRailSize === 'CUSTOM');
+                    const name = isCustom ? (vals.botRailCustomDesc || `HSS ${botH}x${botH}x11GA`) : vals.botRailSize;
+                    const shapeVal = isCustom ? (vals.botRailCustomShape || 'HSS') : vals.botRailType.toUpperCase();
+                    const fbomDesc = isCustom ? (vals.botRailCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.botRailCustomGrade || 'A500') : undefined;
+                    const wVal = calculateWeight(vals.botRailType, vals.botRailSize, vals.length, { w: vals.botRailW || botH, h: botH, t: vals.botRailCustomT || 0.12 }, 1);
+                    bomItems.push({ mark: botMark, qty: 1, desc: name, fbomDesc, remark: isGates ? "BOTTOM RUNNER" : "BOTTOM RAIL", len: formatFraction(vals.length), weight: Math.round(wVal * 10) / 10, shape: shapeVal, size: name, len_dec: vals.length, grade: gradeVal });
                 }
 
-
                 if (midMark) {
-                    let name = vals.midRailSize === 'CUSTOM' ? `HSS ${midH}x${midH}` : vals.midRailSize;
-                    let shapeType = (vals.midRailType || 'hss_rect').toUpperCase();
-                    let fbomDesc = name;
-                    let itemGrade = 'A500';
+                    const isCustom = (vals.midRailSize === 'CUSTOM' || vals.midRailType === 'custom');
+                    let name = isCustom ? (vals.midRailCustomDesc || `HSS ${midH}x${midH}x11GA`) : vals.midRailSize;
+                    let shapeType = isCustom ? (vals.midRailCustomShape || 'HSS') : (vals.midRailType || 'hss_rect').toUpperCase();
+                    let fbomDesc = isCustom ? (vals.midRailCustomFbomDesc || name) : name;
+                    let itemGrade = isCustom ? (vals.midRailCustomGrade || 'A500') : 'A500';
 
-                    if (vals.midRailType === 'channel' || String(vals.midRailSize).toUpperCase().includes('CBAR') || String(vals.midRailSize).toUpperCase().includes('C-BAR')) {
+                    if (!isCustom && (vals.midRailType === 'channel' || String(vals.midRailSize).toUpperCase().includes('CBAR') || String(vals.midRailSize).toUpperCase().includes('C-BAR'))) {
                         shapeType = 'CBAR';
                         itemGrade = 'A36';
                         const rawMidUpper = String(vals.midRailSize || '').toUpperCase();
@@ -17903,61 +18291,46 @@ function initApp() {
                             name = 'CBAR 1-1/2x1/2x1/8';
                             fbomDesc = '1 1/2 x 1/2 x 1/8';
                         }
-                    } else if (vals.midRailType === 'angles' || String(vals.midRailSize).toUpperCase().startsWith('L')) {
+                    } else if (!isCustom && (vals.midRailType === 'angles' || String(vals.midRailSize).toUpperCase().startsWith('L'))) {
                         shapeType = 'L';
                         itemGrade = 'A36';
                     }
 
                     const midLen = vals.length - leftPostW - rightPostW;
-                    const wVal = calculateWeight(vals.midRailType, vals.midRailSize, midLen, { w: midH, h: midH, t: 0.12 }, 1);
+                    const wVal = calculateWeight(vals.midRailType, vals.midRailSize, midLen, { w: vals.midRailW || midH, h: midH, t: vals.midRailCustomT || 0.12 }, 1);
                     bomItems.push({ mark: midMark, qty: 1, desc: name, fbomDesc: fbomDesc, remark: isGates ? "MID RUNNER" : "MID RAIL", len: formatFraction(midLen), weight: Math.round(wVal * 10) / 10, shape: shapeType, size: name, len_dec: midLen, grade: itemGrade });
                 }
 
-
                 if (leftMark) {
-
-
                     const lSize = vals.leftPostSize || vals.postSize || 'HSS2x2x14GA';
-
-
-                    const name = lSize === 'CUSTOM' ? `HSS ${leftPostW}x${leftPostW}` : lSize;
-
-
+                    const isCustom = (lSize === 'CUSTOM');
+                    const name = isCustom ? (vals.leftPostCustomDesc || `HSS ${leftPostW}x${leftPostW}x11GA`) : lSize;
+                    const shapeVal = isCustom ? (vals.leftPostCustomShape || 'HSS') : vals.leftPostType.toUpperCase();
+                    const fbomDesc = isCustom ? (vals.leftPostCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.leftPostCustomGrade || 'A500') : undefined;
                     const runnerH = isGates ? vals.fenceHeight : vals.postHeight;
-
-
-                    const wVal = calculateWeight(vals.leftPostType, lSize, runnerH, { w: leftPostW, h: leftPostW, t: 0.12 }, 1);
-
-
-                    bomItems.push({ mark: leftMark, qty: 1, desc: name, remark: "LEFT RUNNER", len: formatFraction(runnerH), weight: Math.round(wVal * 10) / 10, shape: vals.leftPostType.toUpperCase(), size: name, len_dec: runnerH });
-
-
+                    const wVal = calculateWeight(vals.leftPostType, lSize, runnerH, { w: leftPostW, h: vals.leftPostH || leftPostW, t: vals.leftPostCustomT || 0.12 }, 1);
+                    bomItems.push({ mark: leftMark, qty: 1, desc: name, fbomDesc, remark: "LEFT RUNNER", len: formatFraction(runnerH), weight: Math.round(wVal * 10) / 10, shape: shapeVal, size: name, len_dec: runnerH, grade: gradeVal });
                 }
-
 
                 if (rightMark) {
-
-
                     const rSize = vals.rightPostSize || vals.postSize || 'HSS2x2x14GA';
-
-
-                    const name = rSize === 'CUSTOM' ? `HSS ${rightPostW}x${rightPostW}` : rSize;
-
-
+                    const isCustom = (rSize === 'CUSTOM');
+                    const name = isCustom ? (vals.rightPostCustomDesc || `HSS ${rightPostW}x${rightPostW}x11GA`) : rSize;
+                    const shapeVal = isCustom ? (vals.rightPostCustomShape || 'HSS') : vals.rightPostType.toUpperCase();
+                    const fbomDesc = isCustom ? (vals.rightPostCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.rightPostCustomGrade || 'A500') : undefined;
                     const runnerH = isGates ? vals.fenceHeight : vals.postHeight;
-
-
-                    const wVal = calculateWeight(vals.rightPostType, rSize, runnerH, { w: rightPostW, h: rightPostW, t: 0.12 }, 1);
-
-
-                    bomItems.push({ mark: rightMark, qty: 1, desc: name, remark: "RIGHT RUNNER", len: formatFraction(runnerH), weight: Math.round(wVal * 10) / 10, shape: vals.rightPostType.toUpperCase(), size: name, len_dec: runnerH });
-
-
+                    const wVal = calculateWeight(vals.rightPostType, rSize, runnerH, { w: rightPostW, h: vals.rightPostH || rightPostW, t: vals.rightPostCustomT || 0.12 }, 1);
+                    bomItems.push({ mark: rightMark, qty: 1, desc: name, fbomDesc, remark: "RIGHT RUNNER", len: formatFraction(runnerH), weight: Math.round(wVal * 10) / 10, shape: shapeVal, size: name, len_dec: runnerH, grade: gradeVal });
                 }
 
-
                 if (picketMark && finalPicketsCount > 0) {
-                    const name = vals.picketSize === 'CUSTOM' ? `HSS ${pickW}x${pickW}` : vals.picketSize;
+                    const isCustom = (vals.picketSize === 'CUSTOM');
+                    const name = isCustom ? (vals.picketCustomDesc || `HSS ${pickW}x${pickW}x16GA`) : vals.picketSize;
+                    const shapeVal = isCustom ? (vals.picketCustomShape || 'HSS') : vals.picketType.toUpperCase();
+                    const fbomDesc = isCustom ? (vals.picketCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.picketCustomGrade || 'A500') : undefined;
                     const hasMidRail = (vals.midRailType && vals.midRailType !== 'none');
                     const isWeldTop = (vals.picketMidJoint === 'weld_top' && hasMidRail);
                     let picketLen;
@@ -17969,90 +18342,52 @@ function initApp() {
                         const picketTopY = vals.fenceHeight - topH;
                         picketLen = Math.max(1, picketTopY - picketBottomY);
                     }
-                    const wVal = calculateWeight(vals.picketType, vals.picketSize, picketLen, { w: pickW, h: pickW, t: 0.083 }, finalPicketsCount);
+                    const wVal = calculateWeight(vals.picketType, vals.picketSize, picketLen, { w: pickW, h: vals.picketH || pickW, t: vals.picketCustomT || 0.083 }, finalPicketsCount);
                     bomItems.push({
                         mark: picketMark,
                         qty: finalPicketsCount,
                         desc: name,
+                        fbomDesc,
                         remark: isWeldTop ? "UPPER PICKET" : "PICKET",
                         len: formatFraction(picketLen),
                         weight: Math.round(wVal * 10) / 10,
-                        shape: vals.picketType.toUpperCase(),
+                        shape: shapeVal,
                         size: name,
-                        len_dec: picketLen
+                        len_dec: picketLen,
+                        grade: gradeVal
                     });
                 }
 
-
                 if (puppyPicketMark && finalPicketsCount > 0) {
-
-
-                    const name = vals.picketSize === 'CUSTOM' ? `HSS ${pickW}x${pickW}` : vals.picketSize;
-
-
+                    const isCustom = (vals.picketSize === 'CUSTOM');
+                    const name = isCustom ? (vals.picketCustomDesc || `HSS ${pickW}x${pickW}x16GA`) : vals.picketSize;
+                    const shapeVal = isCustom ? (vals.picketCustomShape || 'HSS') : vals.picketType.toUpperCase();
+                    const fbomDesc = isCustom ? (vals.picketCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.picketCustomGrade || 'A500') : undefined;
                     const puppyLen = parseFloat(vals.puppyPicketsLength) || 16.0;
-
-
                     const spanCenterDist = (vals.length - rightPostW / 2) - (leftPostW / 2);
-
-
                     const targetSpacing = vals.picketSpacing || 4.0;
-
-
                     const endGap = (spanCenterDist - (finalPicketsCount - 1) * targetSpacing) / 2;
-
-
                     const puppyPSpc = parseFloat(vals.puppyPicketsSpacing) || 2.0;
-
-
                     let puppyQty = finalPicketsCount - 1;
-
-
                     if (puppyQty < 0) puppyQty = 0;
 
-
                     // Left end gap
-
-
                     const px_0 = leftPostW / 2 + endGap;
-
-
                     const clearLeftGap = (px_0 - pickW / 2) - leftPostW;
-
-
                     if (clearLeftGap > puppyPSpc * 0.9) {
-
-
                         puppyQty++;
-
-
                     }
-
 
                     // Right end gap
-
-
                     const x_last = leftPostW / 2 + endGap + (finalPicketsCount - 1) * targetSpacing;
-
-
                     const clearRightGap = (vals.length - rightPostW) - (x_last + pickW / 2);
-
-
                     if (clearRightGap > puppyPSpc * 0.9) {
-
-
                         puppyQty++;
-
-
                     }
 
-
-                    const wVal = calculateWeight(vals.picketType, vals.picketSize, puppyLen, { w: pickW, h: pickW, t: 0.083 }, puppyQty);
-
-
-                    bomItems.push({ mark: puppyPicketMark, qty: puppyQty, desc: name, remark: "PUPPY PICKET", len: formatFraction(puppyLen), weight: Math.round(wVal * 10) / 10, shape: vals.picketType.toUpperCase(), size: name, len_dec: puppyLen });
-
-
+                    const wVal = calculateWeight(vals.picketType, vals.picketSize, puppyLen, { w: pickW, h: vals.picketH || pickW, t: vals.picketCustomT || 0.083 }, puppyQty);
+                    bomItems.push({ mark: puppyPicketMark, qty: puppyQty, desc: name, fbomDesc, remark: "PUPPY PICKET", len: formatFraction(puppyLen), weight: Math.round(wVal * 10) / 10, shape: shapeVal, size: name, len_dec: puppyLen, grade: gradeVal });
                 }
 
 
@@ -18062,11 +18397,12 @@ function initApp() {
                     const kickPlateSize = vals.kickPlateSize || 'PL3/16';
                     const isOuter = (kickPlateWeld === 'outer');
                     const kpW = isOuter ? vals.length : (vals.length - leftPostW - rightPostW);
+                    const midGapVal = (vals.midRailGap !== undefined && vals.midRailGap !== '') ? parseFloat(vals.midRailGap) : 6.0;
                     let kpH = parseFloat(vals.kickPlateH) || 10.0;
                     if (isOuter) {
-                        kpH = (vals.midRailType !== 'none') ? (vals.midRailGap || 6.0) : (parseFloat(vals.kickPlateH) || 10.0);
+                        kpH = (vals.midRailType !== 'none') ? (botH + midGapVal + midH) : (parseFloat(vals.kickPlateH) || 10.0);
                     } else {
-                        kpH = (vals.midRailType !== 'none') ? Math.max(2, (vals.midRailGap || 6.0) - botH - midH) : (parseFloat(vals.kickPlateH) || 10.0);
+                        kpH = (vals.midRailType !== 'none') ? midGapVal : (parseFloat(vals.kickPlateH) || 10.0);
                     }
                     const plates = SHAPES_DB['plate'] || [];
                     const selectedPlate = plates.find(p => p.id === kickPlateSize) || { t: 0.1875, name: '3/16" Plate' };
@@ -18105,6 +18441,35 @@ function initApp() {
                         shape: 'PL',
                         size: kpDesc,
                         len_dec: kpW
+                    });
+                }
+
+                if (pbMark && hasPanicBarPlate) {
+                    const pbSize = rawPbVal || 'PL3/16';
+                    const pbLen = Math.max(1, vals.length - leftPostW - rightPostW);
+                    const pbW = parseFloat(vals.panicBarPlateW) || 10.0;
+                    const plates = SHAPES_DB['plate'] || [];
+                    const selectedPlate = plates.find(p => p.id === pbSize) || { t: 0.1875, name: '3/16" Plate' };
+                    const pbT = selectedPlate.t || (pbSize === 'PL5/16' ? 0.3125 : 0.1875);
+                    let tStr = pbSize.startsWith('PL') ? pbSize.replace('PL', '') : pbSize;
+                    const widthFormatted = formatFraction(pbW).replace(/["']/g, '');
+                    const pbDesc = `PL ${tStr}X${widthFormatted}`;
+                    const pbFbomDesc = `${tStr} X ${widthFormatted}`;
+                    const wVal = calculateWeight('plate', pbSize, pbLen, { w: pbLen, h: pbW, t: pbT }, 1);
+                    bomItems.push({
+                        mark: pbMark,
+                        qty: 1,
+                        desc: pbDesc,
+                        fbomDesc: pbFbomDesc,
+                        remark: "PANIC BAR PLATE",
+                        len: formatFraction(pbLen),
+                        weight: Math.round(wVal * 10) / 10,
+                        shape: 'PL',
+                        size: pbDesc,
+                        len_dec: pbLen,
+                        grade: 'A36',
+                        category: 'PLATE',
+                        subCategory: 'PANIC BAR PLATE'
                     });
                 }
 
@@ -19239,8 +19604,15 @@ if (botMark) {
                         const pKeys = Object.keys(currentModel.models.pickets.models);
                         if (pKeys.length > 0) {
                             const p0 = currentModel.models.pickets.models[pKeys[0]];
-                            if (p0 && p0.origin) {
-                                pickCx = p0.origin[0] + pickW / 2;
+                            if (p0) {
+                                if (p0.origin) {
+                                    pickCx = p0.origin[0] + pickW / 2;
+                                } else if (p0.models) {
+                                    const subP = p0.models.outer || p0.models.upper || p0.models.lower;
+                                    if (subP && subP.origin) {
+                                        pickCx = subP.origin[0] + pickW / 2;
+                                    }
+                                }
                             }
                         }
                     }
@@ -19262,7 +19634,20 @@ if (botMark) {
                         picketBottomY = (vals.kickPlateWeld === 'outer') ? (parseFloat(vals.kickPlateH) || 10.0) : (botH + (parseFloat(vals.kickPlateH) || 10.0));
                     }
 
-                    const pickCy = (picketBottomY + picketTopY) * 0.6 - effectiveEmbed;
+                    let pickCy = (picketBottomY + picketTopY) * 0.6 - effectiveEmbed;
+                    if (hasPanicBarPlate) {
+                        const actualPbW = parseFloat(vals.panicBarPlateW) || 10.0;
+                        const pbCenterY = parseFloat(vals.panicBarPlateGap) || 36.0;
+                        const pbY0 = Math.max(0, pbCenterY - actualPbW / 2);
+                        const pbY1 = pbY0 + actualPbW;
+                        if (pickCy >= pbY0 - 1.0 && pickCy <= pbY1 + 1.0) {
+                            if (picketTopY - pbY1 >= 4.0) {
+                                pickCy = (pbY1 + picketTopY) * 0.5 - effectiveEmbed;
+                            } else {
+                                pickCy = (picketBottomY + pbY0) * 0.5 - effectiveEmbed;
+                            }
+                        }
+                    }
                     leftLabels.push({
                         text: resolveMark(picketMark),
                         targetCx: pickCx,
@@ -19332,7 +19717,7 @@ if (botMark) {
                 }
 
                 if (kpMark) {
-                    const actualKpH = (vals.midRailType !== 'none') ? (vals.kickPlateWeld === 'outer' ? midRailGap : Math.max(2, midRailGap - botH - midH)) : (parseFloat(vals.kickPlateH) || 10.0);
+                    const actualKpH = (vals.midRailType !== 'none') ? (vals.kickPlateWeld === 'outer' ? (botH + midRailGap + midH) : midRailGap) : (parseFloat(vals.kickPlateH) || 10.0);
                     const kpY = (vals.kickPlateWeld === 'outer') ? 0 : botH;
                     const cyKp = (kpY + actualKpH / 2) - effectiveEmbed;
 
@@ -19352,6 +19737,20 @@ if (botMark) {
                         targetCy: cyKp,
                         targetPdfY: cadToPdf(vals.length * 0.5, cyKp)[1],
                         leaderId: "leader-kickplate"
+                    });
+                }
+
+                if (pbMark && hasPanicBarPlate) {
+                    const actualPbW = parseFloat(vals.panicBarPlateW) || 10.0;
+                    const pbCenterY = parseFloat(vals.panicBarPlateGap) || 36.0;
+                    const pbY = Math.max(0, pbCenterY - actualPbW / 2);
+                    const cyPb = (pbY + actualPbW / 2) - effectiveEmbed;
+                    leftLabels.push({
+                        text: resolveMark(pbMark),
+                        targetCx: vals.length * 0.5,
+                        targetCy: cyPb,
+                        targetPdfY: cadToPdf(vals.length * 0.5, cyPb)[1],
+                        leaderId: "leader-panicbarplate"
                     });
                 }
 
@@ -19782,11 +20181,11 @@ if (botMark) {
             
             if (hasSectionView) {
                 // Section View Title & Scale
-                const local_secX = cadToPdf(vals.length, 0)[0] + 16.0;
-                const local_tubeX1 = local_secX + 22.0;
+                const local_secX = cadToPdf(vals.length, 0)[0] + 10.0;
+                const local_tubeX1 = local_secX + 15.0;
                 const overallHVal = isGates ? (vals.fenceHeight || 72.0) : (vals.postHeight || 72.0);
                 const calcScale = Math.abs(cadToPdf(0, 0)[1] - cadToPdf(0, overallHVal)[1]) / Math.max(1, overallHVal);
-                const tubeW = (parseFloat(vals.topH) || 2.0) * calcScale;
+                const tubeW = (parseFloat(vals.topRailW || vals.topH) || 2.0) * calcScale;
                 const titleSectionX = local_tubeX1 + tubeW / 2;
                 const titleSectionY = titleElevationY;
                 
@@ -20084,22 +20483,16 @@ if (botMark) {
                 const labelText = dim.text || formatFraction(Math.hypot(dim.cx2 - dim.cx1, dim.cy2 - dim.cy1));
 
 
-                // Add a white background mask behind the text to prevent clashing with pickets/lines
-
-
-                const textW = labelText.length * 1.25 + 0.5;
-
-
-                const textH = 2.0;
-
-
-                doc.setFillColor(255, 255, 255);
-
-
-                doc.rect(tx - textW/2, ty - 0.7 - textH/2, textW, textH, 'F');
-
-
-                doc.text(labelText, tx, ty, { align: "center", angle: textAngle });
+                if (Math.abs(textAngle) > 45) {
+                    const tw = doc.getTextWidth(String(labelText));
+                    doc.text(String(labelText), midX - 0.8, midY + tw / 2, { angle: 90 });
+                } else {
+                    const textW = labelText.length * 1.25 + 0.5;
+                    const textH = 2.0;
+                    doc.setFillColor(255, 255, 255);
+                    doc.rect(tx - textW/2, ty - 0.7 - textH/2, textW, textH, 'F');
+                    doc.text(labelText, tx, ty, { align: "center", angle: textAngle });
+                }
 
 
             }
@@ -20262,8 +20655,12 @@ if (botMark) {
 
                 const ty = midY + py * textShiftMm;
 
-
-                doc.text(text, tx, ty, { align: "center", angle: textAngle });
+                if (Math.abs(textAngle) > 45) {
+                    const tw = doc.getTextWidth(String(text));
+                    doc.text(String(text), midX - 0.8, midY + tw / 2, { angle: 90 });
+                } else {
+                    doc.text(text, tx, ty, { align: "center", angle: textAngle });
+                }
 
             }
 
@@ -20720,11 +21117,15 @@ if (botMark) {
                     const rBaseY = len * tan;
                     const gateH = isGates ? (vals.fenceHeight || 72.0) : (fHeight > 0 ? fHeight : pHeight);
                     drawCadDimension(len, rBaseY, len, rBaseY + gateH, 14, formatFraction(gateH), "right");
+                    if (hasPanicBarPlate) {
+                        const pbGapVal = parseFloat(vals.panicBarPlateGap) || 36.0;
+                        drawCadDimension(len, rBaseY, len, rBaseY + pbGapVal, 7, formatFraction(pbGapVal), "right");
+                    }
                 }
 
                 // --- DRAW STRUCTURAL SIDE ELEVATION VIEW (TEKLA / AUTOCAD STYLE) ---
                 const drawSectionViewA_A = () => {
-                    const secX = cadToPdf(vals.length, 0)[0] + 14.0;
+                    const secX = cadToPdf(vals.length, 0)[0] + 10.0;
 
 
                     const secW = 42.0;
@@ -20757,10 +21158,10 @@ if (botMark) {
                     const infillBotY = botY - botH_val;
 
 
-                    const tubeX1 = secX + 22.0;
+                    const tubeX1 = secX + 15.0;
 
 
-                    const tubeW = (topH || 2.0) * scale; // Keep square tube width matching scaled height
+                    const tubeW = (vals.topRailW || topH || 2.0) * scale;
 
 
                     const tubeX2 = tubeX1 + tubeW;
@@ -20858,7 +21259,7 @@ if (botMark) {
                     }
 
 
-                    const kpH_CAD = (!isNaN(userKpH) && userKpH > 0 && userKpH !== 10.0 && userKpH !== calculatedKpH) ? userKpH : calculatedKpH;
+                    const kpH_CAD = calculatedKpH;
 
 
                     const kpH_mm = hasKickPlate ? (kpH_CAD * scale) : 0;
@@ -20944,41 +21345,6 @@ if (botMark) {
                             const dotY = infillTopY + d * dotStep;
                             doc.circle(wireX, dotY, dotRadius, 'FD');
                         }
-
-
-                        // Clean Leader Line & Callout Text for FB1x1/8 (points to the flat bar)
-
-
-                        const leaderY = infillTopY + fbH / 2;
-
-
-                        const leaderLineX2 = fbX - 5.0;
-
-
-                        doc.setLineWidth(0.2);
-
-
-                        doc.line(fbX, leaderY, leaderLineX2, leaderY);
-
-
-                        const fbMarkStr = "FB1x1/8";
-
-
-                        doc.setFont('helvetica', 'bold');
-
-
-                        doc.setFontSize(4.0);
-
-
-                        doc.setTextColor(0, 0, 0);
-
-
-                        const textWidth = doc.getTextWidth(fbMarkStr);
-
-
-                        doc.text(fbMarkStr, leaderLineX2 - 1.0 - textWidth, leaderY + 0.5);
-
-
                     }
 
                     // Siding Profile in Section View (Trash Gate / Dumpster Gate)
@@ -21104,10 +21470,48 @@ if (botMark) {
 
                     }
 
+                    // --- 5B. PANIC BAR PLATE PROFILE (IF ACTIVE) ---
+                    const pbGapVal = parseFloat(vals.panicBarPlateGap) || 36.0;
+                    const actualPbW = parseFloat(vals.panicBarPlateW) || 10.0;
+                    const pbY_CAD = Math.max(0, pbGapVal - actualPbW / 2);
+                    const pbCenterPdfY = botY - pbGapVal * scale;
+                    const pbTopPdfY = botY - (pbY_CAD + actualPbW) * scale;
+                    const pbBotPdfY = botY - pbY_CAD * scale;
+                    if (hasPanicBarPlate) {
+                        const pbThickness = 0.25 * scale;
+                        doc.setFillColor(0, 0, 0);
+                        doc.rect(tubeX1 - pbThickness, pbTopPdfY, pbThickness, Math.max(0.5, pbBotPdfY - pbTopPdfY), 'F');
+                    }
+
 
                     // --- 6. LEFT VERTICAL DIMENSION CHAIN (SHARED DIMENSIONS) ---
-                    const dimLeftX1 = secX + 7.5;  // Level 2 (Sub-dimensions)
                     const dimLeftX2 = secX + 0.5;  // Level 1 (Overall Height)
+                    const dimLeftX1 = secX + 5.0;  // Level 2 (Sub-dimensions)
+
+                    // Helper to render vertical text strictly aligned on the same X column (no jsPDF align:'center' horizontal drift)
+                    const drawVertCentered = (str, lineX, midY, fontSize, xGap = 0.7) => {
+                        const s = String(str || '');
+                        doc.setFont('helvetica', 'bold');
+                        doc.setFontSize(fontSize);
+                        doc.setTextColor(0, 0, 0);
+                        const tw = doc.getTextWidth(s);
+                        doc.text(s, lineX - xGap, midY + tw / 2, { angle: 90 });
+                    };
+                    const drawVertAboveTick = (str, lineX, tickY, fontSize, xGap = 0.7, clearance = 1.2) => {
+                        const s = String(str || '');
+                        doc.setFont('helvetica', 'bold');
+                        doc.setFontSize(fontSize);
+                        doc.setTextColor(0, 0, 0);
+                        doc.text(s, lineX - xGap, tickY - clearance, { angle: 90 });
+                    };
+                    const drawVertBelowTick = (str, lineX, tickY, fontSize, xGap = 0.7, clearance = 1.2) => {
+                        const s = String(str || '');
+                        doc.setFont('helvetica', 'bold');
+                        doc.setFontSize(fontSize);
+                        doc.setTextColor(0, 0, 0);
+                        const tw = doc.getTextWidth(s);
+                        doc.text(s, lineX - xGap, tickY + clearance + tw, { angle: 90 });
+                    };
 
                     // Draw Horizontal Projection/Extension Lines spanning from Elevation View to Section View (Unbroken, continuous)
                     doc.setDrawColor(0, 0, 0);
@@ -21119,23 +21523,44 @@ if (botMark) {
                     doc.line(projStartX, infillBotY, projEndX, infillBotY);
                     doc.line(projStartX, botY, projEndX, botY);
 
+                    // Right-side dimension on Gate Elevation for Panic Bar Plate Gap (from bottom of gate to center of panic bar plate)
+                    if (hasPanicBarPlate) {
+                        const pbGateDimX = projStartX + 5.5;
+                        const pbPlateRightX = cadToPdf(vals.length - rightPostW, pbGapVal)[0];
+                        doc.setLineWidth(0.15);
+                        doc.line(pbPlateRightX, pbCenterPdfY, pbGateDimX + 1.0, pbCenterPdfY);
+                        doc.line(projStartX, botY, pbGateDimX + 1.0, botY);
+                        doc.setLineWidth(0.25);
+                        doc.line(pbGateDimX, pbCenterPdfY, pbGateDimX, botY);
+                        drawArrowhead(pbGateDimX, pbCenterPdfY, -Math.PI / 2, 1.1);
+                        drawArrowhead(pbGateDimX, botY, Math.PI / 2, 1.1);
+                        const pbGapStr = formatFraction(pbGapVal);
+                        drawVertCentered(pbGapStr, pbGateDimX, (pbCenterPdfY + botY) / 2, 4.5 * (customDimFontSize / 12.0));
+                    }
+
                     // Level 1: Overall Height (Continuous unbroken line with arrows)
                     doc.setLineWidth(0.2);
                     doc.line(dimLeftX2, topY, dimLeftX2, botY);
                     const overallHStr = formatFraction(overallHVal);
-                    
-                    doc.setFont('helvetica', 'bold');
-                    doc.setFontSize(5.0 * (customDimFontSize / 12.0));
-                    doc.setTextColor(0, 0, 0);
-                    doc.text(overallHStr, dimLeftX2 - 1.2, (topY + botY) / 2, { align: "center", angle: 90 });
+                    drawVertCentered(overallHStr, dimLeftX2, (topY + botY) / 2, 5.0 * (customDimFontSize / 12.0));
 
                     // Draw arrowheads pointing vertically
                     drawArrowhead(dimLeftX2, topY, -Math.PI / 2, 1.2);
                     drawArrowhead(dimLeftX2, botY, Math.PI / 2, 1.2);
 
-                    // Level 2: Top Tube H, Clear Infill H, Bot Tube H (Continuous unbroken line with 45 deg ticks)
+                    // Level 2: Top Tube H, Clear Infill H, Bot Tube H (Continuous unbroken line with 45 deg ticks & Snap 2 tails)
+                    const topHStr = formatFraction(topH || 2.0);
+                    const botHStr = formatFraction(botH || 2.0);
+                    const subFontSize = 4.5 * (customDimFontSize / 12.0);
+                    doc.setFont('helvetica', 'bold');
+                    doc.setFontSize(subFontSize);
+                    const topHTw = doc.getTextWidth(topHStr);
+                    const botHTw = doc.getTextWidth(botHStr);
+                    const topTailLen = Math.max(4.5, topHTw + 2.2);
+                    const botTailLen = Math.max(4.5, botHTw + 2.2);
+
                     doc.setLineWidth(0.2);
-                    doc.line(dimLeftX1, topY, dimLeftX1, botY);
+                    doc.line(dimLeftX1, topY - topTailLen, dimLeftX1, botY + botTailLen);
 
                     // Draw ticks at intersections
                     const tickSize = 1.0;
@@ -21145,28 +21570,20 @@ if (botMark) {
                     doc.line(dimLeftX1 - tickSize, infillBotY + tickSize, dimLeftX1 + tickSize, infillBotY - tickSize);
                     doc.line(dimLeftX1 - tickSize, botY + tickSize, dimLeftX1 + tickSize, botY - tickSize);
 
-                    // Top Tube Height Text (2") centered vertically between topY and infillTopY
-                    const topHStr = formatFraction(topH || 2.0);
-                    doc.setFont('helvetica', 'bold');
-                    doc.setFontSize(4.5 * (customDimFontSize / 12.0));
-                    doc.text(topHStr, dimLeftX1 - 1.2, (topY + infillTopY) / 2, { align: "center", angle: 90 });
+                    // Top Tube Height Text (e.g. 3" or 2") placed above topY along the upper vertical tail (Snap 2 style)
+                    drawVertAboveTick(topHStr, dimLeftX1, topY, subFontSize);
 
-                    // Infill Height Text (5'-8") centered vertically between infillTopY and infillBotY
+                    // Infill Height Text (e.g. 5'-7 1/2") centered vertically between infillTopY and infillBotY on the exact same X line
                     const infillHVal = Math.max(1, overallHVal - (topH || 2.0) - (botH || 2.0));
                     const infillHStr = formatFraction(infillHVal);
-                    doc.setFont('helvetica', 'bold');
-                    doc.setFontSize(5.0 * (customDimFontSize / 12.0));
-                    doc.text(infillHStr, dimLeftX1 - 1.2, (infillTopY + infillBotY) / 2, { align: "center", angle: 90 });
+                    drawVertCentered(infillHStr, dimLeftX1, (infillTopY + infillBotY) / 2, 5.0 * (customDimFontSize / 12.0));
 
-                    // Bot Tube Height Text (2") centered vertically between infillBotY and botY
-                    const botHStr = formatFraction(botH || 2.0);
-                    doc.setFont('helvetica', 'bold');
-                    doc.setFontSize(4.5 * (customDimFontSize / 12.0));
-                    doc.text(botHStr, dimLeftX1 - 1.2, (infillBotY + botY) / 2, { align: "center", angle: 90 });
+                    // Bot Tube Height Text (e.g. 1 1/2" or 2") placed below botY along the lower vertical tail on the exact same X line
+                    drawVertBelowTick(botHStr, dimLeftX1, botY, subFontSize);
                     
-                    // --- 7. RIGHT VERTICAL DIMENSION CHAIN (PICKET, MID RUNNER & GAP/KICK PLATE) ---
+                    // --- 7. RIGHT VERTICAL DIMENSION CHAIN (PICKET, MID RUNNER & GAP/KICK PLATE / PANIC BAR PLATE GAP) ---
                     if (hasKickPlate || hasMidRail) {
-                        const dimRightX = tubeX2 + 6.0;
+                        const dimRightX = tubeX2 + 5.0;
 
                         if (hasMidRail) {
                             const y1 = infillTopY;                // Bottom of Top Runner
@@ -21177,13 +21594,13 @@ if (botMark) {
 
                             if (showMidRunnerDim) {
                                 doc.setLineWidth(0.2);
-                                doc.line(tubeX2, y1, dimRightX + 1.0, y1);
-                                doc.line(tubeX2, y2, dimRightX + 1.0, y2);
-                                doc.line(tubeX2, y3, dimRightX + 1.0, y3);
-                                doc.line(tubeX2, y4, dimRightX + 1.0, y4);
+                                doc.line(tubeX2, y1, dimRightX + 1.2, y1);
+                                doc.line(tubeX2, y2, dimRightX + 1.2, y2);
+                                doc.line(tubeX2, y3, dimRightX + 1.2, y3);
+                                doc.line(tubeX2, y4, dimRightX + 1.2, y4);
 
                                 doc.setLineWidth(0.3);
-                                doc.line(dimRightX, y1, dimRightX, y4);
+                                doc.line(dimRightX, y1 - 1.8, dimRightX, y4 + 1.8);
 
                                 const rTick = 1.0;
                                 doc.setLineWidth(0.35);
@@ -21192,30 +21609,26 @@ if (botMark) {
                                 doc.line(dimRightX - rTick, y3 + rTick, dimRightX + rTick, y3 - rTick);
                                 doc.line(dimRightX - rTick, y4 + rTick, dimRightX + rTick, y4 - rTick);
 
-                                doc.setFont('helvetica', 'bold');
-                                doc.setFontSize(4.5 * (customDimFontSize / 12.0));
-                                doc.setTextColor(0, 0, 0);
-
                                 // Segment 1: Picket Length
                                 const calcPicketH = Math.max(1.0, (vals.fenceHeight || 72.0) - (topH || 2.0) - (botH || 2.0) - (midH || 2.0) - midGapVal);
                                 const picketHStr = formatFraction(calcPicketH);
-                                doc.text(picketHStr, dimRightX - 1.2, (y1 + y2) / 2, { align: "center", angle: 90 });
+                                drawVertCentered(picketHStr, dimRightX, (y1 + y2) / 2, subFontSize);
 
-                                // Segment 2: Mid Runner Profile Width / Height
+                                // Segment 2: Mid Runner Profile Width / Height (placed above y2 like Snap 2 so it never crosses horizontal lines)
                                 const midHStr = formatFraction(midH || 2.0);
-                                doc.text(midHStr, dimRightX - 1.2, (y2 + y3) / 2, { align: "center", angle: 90 });
+                                drawVertAboveTick(midHStr, dimRightX, y2, subFontSize);
 
                                 // Segment 3: Bottom Gap / Kick Plate Height
                                 const gapStr = formatFraction(midGapVal);
-                                doc.text(gapStr, dimRightX - 1.2, (y3 + y4) / 2, { align: "center", angle: 90 });
+                                drawVertCentered(gapStr, dimRightX, (y3 + y4) / 2, subFontSize);
                             } else {
                                 doc.setLineWidth(0.2);
-                                doc.line(tubeX2, y1, dimRightX + 1.0, y1);
-                                doc.line(tubeX2, y2, dimRightX + 1.0, y2);
-                                doc.line(tubeX2, y4, dimRightX + 1.0, y4);
+                                doc.line(tubeX2, y1, dimRightX + 1.2, y1);
+                                doc.line(tubeX2, y2, dimRightX + 1.2, y2);
+                                doc.line(tubeX2, y4, dimRightX + 1.2, y4);
 
                                 doc.setLineWidth(0.3);
-                                doc.line(dimRightX, y1, dimRightX, y4);
+                                doc.line(dimRightX, y1 - 1.8, dimRightX, y4 + 1.8);
 
                                 const rTick = 1.0;
                                 doc.setLineWidth(0.35);
@@ -21223,17 +21636,13 @@ if (botMark) {
                                 doc.line(dimRightX - rTick, y2 + rTick, dimRightX + rTick, y2 - rTick);
                                 doc.line(dimRightX - rTick, y4 + rTick, dimRightX + rTick, y4 - rTick);
 
-                                doc.setFont('helvetica', 'bold');
-                                doc.setFontSize(4.5 * (customDimFontSize / 12.0));
-                                doc.setTextColor(0, 0, 0);
-
                                 const calcPicketH = Math.max(1.0, (vals.fenceHeight || 72.0) - (topH || 2.0) - (botH || 2.0) - (midH || 2.0) - midGapVal);
                                 const picketHStr = formatFraction(calcPicketH);
-                                doc.text(picketHStr, dimRightX - 1.2, (y1 + y2) / 2, { align: "center", angle: 90 });
+                                drawVertCentered(picketHStr, dimRightX, (y1 + y2) / 2, subFontSize);
 
                                 const gapValCAD = midGapVal + (botH || 2.0) + (midH || 2.0);
                                 const gapStr = formatFraction(gapValCAD);
-                                doc.text(gapStr, dimRightX - 1.2, (y2 + y4) / 2, { align: "center", angle: 90 });
+                                drawVertCentered(gapStr, dimRightX, (y2 + y4) / 2, subFontSize);
                             }
                         } else {
                             const y1 = infillTopY;
@@ -21242,12 +21651,12 @@ if (botMark) {
                             const y3 = isOuterKP ? botY : infillBotY;
 
                             doc.setLineWidth(0.2);
-                            doc.line(tubeX2, y1, dimRightX + 1.0, y1);
-                            doc.line(tubeX2, y2, dimRightX + 1.0, y2);
-                            doc.line(tubeX2, y3, dimRightX + 1.0, y3);
+                            doc.line(tubeX2, y1, dimRightX + 1.2, y1);
+                            doc.line(tubeX2, y2, dimRightX + 1.2, y2);
+                            doc.line(tubeX2, y3, dimRightX + 1.2, y3);
 
                             doc.setLineWidth(0.3);
-                            doc.line(dimRightX, y1, dimRightX, y3);
+                            doc.line(dimRightX, y1 - 1.8, dimRightX, y3 + 1.8);
 
                             const rTick = 1.0;
                             doc.setLineWidth(0.35);
@@ -21255,17 +21664,31 @@ if (botMark) {
                             doc.line(dimRightX - rTick, y2 + rTick, dimRightX + rTick, y2 - rTick);
                             doc.line(dimRightX - rTick, y3 + rTick, dimRightX + rTick, y3 - rTick);
 
-                            doc.setFont('helvetica', 'bold');
-                            doc.setFontSize(4.5 * (customDimFontSize / 12.0));
-                            doc.setTextColor(0, 0, 0);
-
                             const calcPicketH = Math.max(1.0, (vals.fenceHeight || 72.0) - (topH || 2.0) - (botH || 2.0) - kpH_CAD);
                             const picketHStr = formatFraction(calcPicketH);
-                            doc.text(picketHStr, dimRightX - 1.2, (y1 + y2) / 2, { align: "center", angle: 90 });
+                            drawVertCentered(picketHStr, dimRightX, (y1 + y2) / 2, subFontSize);
 
                             const kpHStr = formatFraction(Math.max(1, kpH_CAD));
-                            doc.text(kpHStr, dimRightX - 1.2, (y2 + y3) / 2, { align: "center", angle: 90 });
+                            drawVertCentered(kpHStr, dimRightX, (y2 + y3) / 2, subFontSize);
                         }
+                    }
+
+                    if (hasPanicBarPlate) {
+                        const pbDimRightX = (hasKickPlate || hasMidRail) ? (tubeX2 + 10.0) : (tubeX2 + 5.0);
+                        const rTick = 1.0;
+                        doc.setLineWidth(0.2);
+                        doc.line(tubeX2, pbCenterPdfY, pbDimRightX + 1.2, pbCenterPdfY);
+                        doc.line(tubeX2, botY, pbDimRightX + 1.2, botY);
+
+                        doc.setLineWidth(0.3);
+                        doc.line(pbDimRightX, pbCenterPdfY - 1.8, pbDimRightX, botY + 1.8);
+
+                        doc.setLineWidth(0.35);
+                        doc.line(pbDimRightX - rTick, pbCenterPdfY + rTick, pbDimRightX + rTick, pbCenterPdfY - rTick);
+                        doc.line(pbDimRightX - rTick, botY + rTick, pbDimRightX + rTick, botY - rTick);
+
+                        const pbGapStr = formatFraction(pbGapVal);
+                        drawVertCentered(pbGapStr, pbDimRightX, (pbCenterPdfY + botY) / 2, subFontSize);
                     }
 
                 };
@@ -22961,10 +23384,8 @@ if (botMark) {
                 const isGates = vals.railsGatesType === 'gates';
 
 
-                const leftPostW = getPicketDimension(vals.leftPostType, vals.leftPostSize, 2.0);
-
-
-                const rightPostW = getPicketDimension(vals.rightPostType, vals.rightPostSize, 2.0);
+                const leftPostW = getPicketDimension(vals.leftPostType, vals.leftPostSize, vals.leftPostW || 2.0);
+                const rightPostW = getPicketDimension(vals.rightPostType, vals.rightPostSize, vals.rightPostW || 2.0);
 
 
                 const midPostW = getPicketDimension(vals.midPostType, vals.midPostSize, 2.0);
@@ -23154,111 +23575,60 @@ if (botMark) {
 
 
                 // Add Top Rail / Runner (Main Mark)
-
-
                 if (topMark) {
-
-
-                    const name = vals.topRailSize === 'CUSTOM' ? `HSS ${vals.topRailH}x${vals.topRailH}` : vals.topRailSize;
-
-
-                    const wVal = calculateWeight(vals.topRailType, vals.topRailSize, preciseTopLen, { w: vals.topRailH, h: vals.topRailH, t: 0.12 }, 1);
-
-
+                    const isCustom = (vals.topRailSize === 'CUSTOM');
+                    const name = isCustom ? (vals.topRailCustomDesc || `HSS ${vals.topRailH}x${vals.topRailH}x11GA`) : vals.topRailSize;
+                    const shapeVal = isCustom ? (vals.topRailCustomShape || 'HSS') : (vals.topRailType || 'hss_rect').toUpperCase();
+                    const fbomDesc = isCustom ? (vals.topRailCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.topRailCustomGrade || 'A500') : undefined;
+                    const wVal = calculateWeight(vals.topRailType, vals.topRailSize, preciseTopLen, { w: vals.topRailW || vals.topRailH, h: vals.topRailH, t: vals.topRailCustomT || 0.12 }, 1);
                     bomItems.push({
-
-
                         mark: topMark,
-
-
                         qty: 1,
-
-
                         desc: name,
-
-
+                        fbomDesc,
                         remark: isGates ? "TOP RUNNER" : "TOP RAIL",
-
-
                         len: formatFraction(preciseTopLen),
-
-
                         weight: Math.round(wVal * 10) / 10,
-
-
-                        shape: (vals.topRailType || 'hss_rect').toUpperCase(),
-
-
+                        shape: shapeVal,
                         size: name,
-
-
-                        len_dec: preciseTopLen
-
-
+                        len_dec: preciseTopLen,
+                        grade: gradeVal
                     });
-
-
                 }
-
 
                 // Add Bottom Rail / Runner
-
-
                 if (botMark) {
-
-
-                    const name = vals.botRailSize === 'CUSTOM' ? `HSS ${vals.botRailH}x${vals.botRailH}` : vals.botRailSize;
-
-
-                    const wVal = calculateWeight(vals.botRailType || 'hss_rect', vals.botRailSize, preciseBotLen, { w: vals.botRailH, h: vals.botRailH, t: 0.12 }, 1);
-
-
+                    const isCustom = (vals.botRailSize === 'CUSTOM');
+                    const name = isCustom ? (vals.botRailCustomDesc || `HSS ${vals.botRailH}x${vals.botRailH}x11GA`) : vals.botRailSize;
+                    const shapeVal = isCustom ? (vals.botRailCustomShape || 'HSS') : (vals.botRailType || 'hss_rect').toUpperCase();
+                    const fbomDesc = isCustom ? (vals.botRailCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.botRailCustomGrade || 'A500') : undefined;
+                    const wVal = calculateWeight(vals.botRailType || 'hss_rect', vals.botRailSize, preciseBotLen, { w: vals.botRailW || vals.botRailH, h: vals.botRailH, t: vals.botRailCustomT || 0.12 }, 1);
                     bomItems.push({
-
-
                         mark: botMark,
-
-
                         qty: 1,
-
-
                         desc: name,
-
-
+                        fbomDesc,
                         remark: isGates ? "BOTTOM RUNNER" : "BOTTOM RAIL",
-
-
                         len: formatFraction(preciseBotLen),
-
-
                         weight: Math.round(wVal * 10) / 10,
-
-
-                        shape: (vals.botRailType || 'hss_rect').toUpperCase(),
-
-
+                        shape: shapeVal,
                         size: name,
-
-
-                        len_dec: preciseBotLen
-
-
+                        len_dec: preciseBotLen,
+                        grade: gradeVal
                     });
-
-
                 }
 
-
                 // Add Mid Rail / Runner
-
-
                 if (midMark) {
-                    let name = vals.midRailSize === 'CUSTOM' ? `HSS ${vals.midRailH}x${vals.midRailH}` : vals.midRailSize;
-                    let shapeType = (vals.midRailType || 'hss_rect').toUpperCase();
-                    let fbomDesc = name;
-                    let itemGrade = 'A500';
+                    const isCustom = (vals.midRailSize === 'CUSTOM' || vals.midRailType === 'custom');
+                    let name = isCustom ? (vals.midRailCustomDesc || `HSS ${vals.midRailH}x${vals.midRailH}x11GA`) : vals.midRailSize;
+                    let shapeType = isCustom ? (vals.midRailCustomShape || 'HSS') : (vals.midRailType || 'hss_rect').toUpperCase();
+                    let fbomDesc = isCustom ? (vals.midRailCustomFbomDesc || name) : name;
+                    let itemGrade = isCustom ? (vals.midRailCustomGrade || 'A500') : 'A500';
 
-                    if (vals.midRailType === 'channel' || String(vals.midRailSize).toUpperCase().includes('CBAR') || String(vals.midRailSize).toUpperCase().includes('C-BAR')) {
+                    if (!isCustom && (vals.midRailType === 'channel' || String(vals.midRailSize).toUpperCase().includes('CBAR') || String(vals.midRailSize).toUpperCase().includes('C-BAR'))) {
                         shapeType = 'CBAR';
                         itemGrade = 'A36';
                         const rawMidUpper = String(vals.midRailSize || '').toUpperCase();
@@ -23272,12 +23642,12 @@ if (botMark) {
                             name = 'CBAR 1-1/2x1/2x1/8';
                             fbomDesc = '1 1/2 x 1/2 x 1/8';
                         }
-                    } else if (vals.midRailType === 'angles' || String(vals.midRailSize).toUpperCase().startsWith('L')) {
+                    } else if (!isCustom && (vals.midRailType === 'angles' || String(vals.midRailSize).toUpperCase().startsWith('L'))) {
                         shapeType = 'L';
                         itemGrade = 'A36';
                     }
 
-                    const wVal = calculateWeight(vals.midRailType || 'hss_rect', vals.midRailSize, preciseMidLen, { w: vals.midRailH, h: vals.midRailH, t: 0.12 }, 1);
+                    const wVal = calculateWeight(vals.midRailType || 'hss_rect', vals.midRailSize, preciseMidLen, { w: vals.midRailW || vals.midRailH, h: vals.midRailH, t: vals.midRailCustomT || 0.12 }, 1);
                     bomItems.push({
                         mark: midMark,
                         qty: 1,
@@ -23293,166 +23663,73 @@ if (botMark) {
                     });
                 }
 
-
                 // Add Left Runner
-
-
                 const runnerH = isGates ? vals.fenceHeight : vals.postHeight;
-
-
                 if (leftMark) {
-
-
                     const lSize = vals.leftPostSize || vals.postSize || 'HSS2x2x14GA';
-
-
-                    const name = lSize === 'CUSTOM' ? `HSS ${vals.leftPostW}x${vals.leftPostW}` : lSize;
-
-
-                    const wVal = calculateWeight(vals.leftPostType || 'hss_rect', lSize, runnerH, { w: vals.leftPostW || 2.0, h: vals.leftPostW || 2.0, t: 0.15 }, 1);
-
-
+                    const isCustom = (lSize === 'CUSTOM');
+                    const name = isCustom ? (vals.leftPostCustomDesc || `HSS ${vals.leftPostW}x${vals.leftPostW}x11GA`) : lSize;
+                    const shapeVal = isCustom ? (vals.leftPostCustomShape || 'HSS') : (vals.leftPostType || 'hss_rect').toUpperCase();
+                    const fbomDesc = isCustom ? (vals.leftPostCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.leftPostCustomGrade || 'A500') : undefined;
+                    const wVal = calculateWeight(vals.leftPostType || 'hss_rect', lSize, runnerH, { w: vals.leftPostW || 2.0, h: vals.leftPostH || vals.leftPostW || 2.0, t: vals.leftPostCustomT || 0.15 }, 1);
                     bomItems.push({
-
-
                         mark: leftMark,
-
-
                         qty: 1,
-
-
                         desc: name,
-
-
+                        fbomDesc,
                         remark: "LEFT RUNNER",
-
-
                         len: formatFraction(runnerH),
-
-
                         weight: Math.round(wVal * 10) / 10,
-
-
-                        shape: (vals.leftPostType || 'hss_rect').toUpperCase(),
-
-
+                        shape: shapeVal,
                         size: name,
-
-
-                        len_dec: runnerH
-
-
+                        len_dec: runnerH,
+                        grade: gradeVal
                     });
-
-
                 }
-
 
                 // Add Right Runner
-
-
                 if (rightMark) {
-
-
                     const rSize = vals.rightPostSize || vals.postSize || 'HSS2x2x14GA';
-
-
-                    const name = rSize === 'CUSTOM' ? `HSS ${vals.rightPostW}x${vals.rightPostW}` : rSize;
-
-
-                    const wVal = calculateWeight(vals.rightPostType || 'hss_rect', rSize, runnerH, { w: vals.rightPostW || 2.0, h: vals.rightPostW || 2.0, t: 0.15 }, 1);
-
-
+                    const isCustom = (rSize === 'CUSTOM');
+                    const name = isCustom ? (vals.rightPostCustomDesc || `HSS ${vals.rightPostW}x${vals.rightPostW}x11GA`) : rSize;
+                    const shapeVal = isCustom ? (vals.rightPostCustomShape || 'HSS') : (vals.rightPostType || 'hss_rect').toUpperCase();
+                    const fbomDesc = isCustom ? (vals.rightPostCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.rightPostCustomGrade || 'A500') : undefined;
+                    const wVal = calculateWeight(vals.rightPostType || 'hss_rect', rSize, runnerH, { w: vals.rightPostW || 2.0, h: vals.rightPostH || vals.rightPostW || 2.0, t: vals.rightPostCustomT || 0.15 }, 1);
                     bomItems.push({
-
-
                         mark: rightMark,
-
-
                         qty: 1,
-
-
                         desc: name,
-
-
+                        fbomDesc,
                         remark: "RIGHT RUNNER",
-
-
                         len: formatFraction(runnerH),
-
-
                         weight: Math.round(wVal * 10) / 10,
-
-
-                        shape: (vals.rightPostType || 'hss_rect').toUpperCase(),
-
-
+                        shape: shapeVal,
                         size: name,
-
-
-                        len_dec: runnerH
-
-
+                        len_dec: runnerH,
+                        grade: gradeVal
                     });
-
-
                 }
-
 
                 // Add Mid Posts
-
-
                 if (midPostMark) {
-
-
                     const name = vals.midPostSize === 'CUSTOM' ? `HSS ${vals.midPostW}x${vals.midPostW}` : vals.midPostSize;
-
-
                     const wVal = calculateWeight(vals.midPostType || 'hss_rect', vals.midPostSize, finalMidPostHeight, { w: vals.midPostW, h: vals.midPostW, t: 0.15 }, midPostCount);
-
-
                     bomItems.push({
-
-
                         mark: midPostMark,
-
-
                         qty: midPostCount,
-
-
                         desc: name,
-
-
                         remark: "MID POST",
-
-
                         len: formatFraction(finalMidPostHeight),
-
-
                         weight: Math.round(wVal * 10) / 10,
-
-
                         shape: (vals.midPostType || 'hss_rect').toUpperCase(),
-
-
                         size: name,
-
-
                         len_dec: finalMidPostHeight
-
-
                     });
-
-
                 }
 
-
                 // Add Pickets
-
-
-                if (picketMark) {
-
-
                 if (picketMark) {
                     const hasMidRail = (vals.midRailType && vals.midRailType !== 'none');
                     const isWeldTop = (vals.picketMidJoint === 'weld_top' && hasMidRail);
@@ -23465,22 +23742,25 @@ if (botMark) {
                         const picketTopY = vals.fenceHeight - topH;
                         picketH = Math.max(2, picketTopY - picketBottomY);
                     }
-                    const name = vals.picketSize === 'CUSTOM' ? `HSS ${vals.picketW}x${vals.picketW}` : vals.picketSize;
-                    const wVal = calculateWeight(vals.picketType || 'hss_rect', vals.picketSize, picketH, { w: vals.picketW, h: vals.picketW, t: 0.08 }, finalPicketsCount);
+                    const isCustom = (vals.picketSize === 'CUSTOM');
+                    const name = isCustom ? (vals.picketCustomDesc || `HSS ${vals.picketW}x${vals.picketW}x16GA`) : vals.picketSize;
+                    const shapeVal = isCustom ? (vals.picketCustomShape || 'HSS') : (vals.picketType || 'hss_rect').toUpperCase();
+                    const fbomDesc = isCustom ? (vals.picketCustomFbomDesc || name) : undefined;
+                    const gradeVal = isCustom ? (vals.picketCustomGrade || 'A500') : undefined;
+                    const wVal = calculateWeight(vals.picketType || 'hss_rect', vals.picketSize, picketH, { w: vals.picketW, h: vals.picketH || vals.picketW, t: vals.picketCustomT || 0.08 }, finalPicketsCount);
                     bomItems.push({
                         mark: picketMark,
                         qty: finalPicketsCount,
                         desc: name,
+                        fbomDesc,
                         remark: isWeldTop ? "UPPER PICKET" : "PICKET",
                         len: formatFraction(picketH),
                         weight: Math.round(wVal * 10) / 10,
-                        shape: (vals.picketType || 'hss_rect').toUpperCase(),
+                        shape: shapeVal,
                         size: name,
-                        len_dec: picketH
+                        len_dec: picketH,
+                        grade: gradeVal
                     });
-                }
-
-
                 }
 
 
@@ -23503,23 +23783,12 @@ if (botMark) {
 
 
                     const kpW = isOuter ? vals.length : (vals.length - leftPostW - rightPostW);
-
-
+                    const midGapVal = (vals.midRailGap !== undefined && vals.midRailGap !== '') ? parseFloat(vals.midRailGap) : 6.0;
                     let kpH = parseFloat(vals.kickPlateH) || 10.0;
-
-
                     if (isOuter) {
-
-
-                        kpH = (vals.midRailType !== 'none') ? (vals.midRailGap || 6.0) : (parseFloat(vals.kickPlateH) || 10.0);
-
-
+                        kpH = (vals.midRailType !== 'none') ? (botH + midGapVal + midH) : (parseFloat(vals.kickPlateH) || 10.0);
                     } else {
-
-
-                        kpH = (vals.midRailType !== 'none') ? Math.max(2, (vals.midRailGap || 6.0) - botH - midH) : (parseFloat(vals.kickPlateH) || 10.0);
-
-
+                        kpH = (vals.midRailType !== 'none') ? midGapVal : (parseFloat(vals.kickPlateH) || 10.0);
                     }
 
 
@@ -23613,6 +23882,36 @@ if (botMark) {
 
                 }
 
+                // Add Panic Bar Plate
+                if (pbMark && hasPanicBarPlate) {
+                    const pbSize = rawPbVal || 'PL3/16';
+                    const pbLen = Math.max(1, vals.length - leftPostW - rightPostW);
+                    const pbW = parseFloat(vals.panicBarPlateW) || 10.0;
+                    const plates = SHAPES_DB['plate'] || [];
+                    const selectedPlate = plates.find(p => p.id === pbSize) || { t: 0.1875, name: '3/16" Plate' };
+                    const pbT = selectedPlate.t || (pbSize === 'PL5/16' ? 0.3125 : 0.1875);
+                    let tStr = pbSize.startsWith('PL') ? pbSize.replace('PL', '') : pbSize;
+                    const widthFormatted = formatFraction(pbW).replace(/["']/g, '');
+                    const pbDesc = `PL ${tStr}X${widthFormatted}`;
+                    const pbFbomDesc = `${tStr} X ${widthFormatted}`;
+                    const wVal = calculateWeight('plate', pbSize, pbLen, { w: pbLen, h: pbW, t: pbT }, 1);
+                    bomItems.push({
+                        mark: pbMark,
+                        qty: 1,
+                        desc: pbDesc,
+                        fbomDesc: pbFbomDesc,
+                        remark: "PANIC BAR PLATE",
+                        len: formatFraction(pbLen),
+                        weight: Math.round(wVal * 10) / 10,
+                        shape: 'PL',
+                        size: pbDesc,
+                        len_dec: pbLen,
+                        grade: 'A36',
+                        category: 'PLATE',
+                        subCategory: 'PANIC BAR PLATE'
+                    });
+                }
+
 
                 // Add Base Plates
 
@@ -23701,27 +24000,13 @@ if (botMark) {
                     const hasKP = (vals.kickPlate !== 'none');
 
 
-                    const midGap = vals.midRailGap || 6.0;
-
-
+                    const midGap = (vals.midRailGap !== undefined && vals.midRailGap !== '') ? parseFloat(vals.midRailGap) : 6.0;
                     let kpH = parseFloat(vals.kickPlateH) || 10.0;
-
-
                     let isOuterKP = (vals.kickPlateWeld === 'outer');
-
-
                     if (isOuterKP) {
-
-
-                        kpH = hasMid ? (vals.midRailGap || 6.0) : (parseFloat(vals.kickPlateH) || 10.0);
-
-
+                        kpH = hasMid ? (bH + midGap + mH) : (parseFloat(vals.kickPlateH) || 10.0);
                     } else {
-
-
-                        kpH = hasMid ? Math.max(2, (vals.midRailGap || 6.0) - bH - mH) : (parseFloat(vals.kickPlateH) || 10.0);
-
-
+                        kpH = hasMid ? midGap : (parseFloat(vals.kickPlateH) || 10.0);
                     }
 
 
@@ -26953,6 +27238,7 @@ if (botMark) {
         };
 
         if (currentMode === 'shapes') {
+            syncAdvanceFeatureDefaultQtys();
             const sheets = getProjectSheets();
             if (activeSubMode === 'loosePost') {
                 const looseSheet = sheets.find(s => s.id === 'loosePost') || { cleanDrawingNo: cleanDrawingNo };
@@ -26964,7 +27250,8 @@ if (botMark) {
                     qty: lpParams.qty,
                     desc: lpParams.postDwgName,
                     remark: "LOOSE POST",
-                    len: formatFraction(lpParams.pHeight)
+                    len: formatFraction(lpParams.pHeight),
+                    isSubSheetItem: true
                 });
 
                 if (loosePostConfig.includeBP === 'yes') {
@@ -26973,10 +27260,11 @@ if (botMark) {
 
                     bomItems.push({
                         mark: lpBp.bpMark,
-                        qty: loosePostConfig.qty || 1,
+                        qty: lpParams.qty,
                         desc: lpBp.bpDesc,
                         remark: "BASE PLATE",
-                        len: lpBp.isQiw ? "" : formatFraction(lpBp.bpHeight)
+                        len: lpBp.isQiw ? "" : formatFraction(lpBp.bpHeight),
+                        isSubSheetItem: true
                     });
                 }
             } else if (activeSubMode === 'basePlate') {
@@ -26988,13 +27276,15 @@ if (botMark) {
                     ? (bpc.qiwPlateType || 'QBP54') 
                     : (`PL ${formatFraction(bpc.width || 6.0)}x${formatFraction(bpc.thickness || 0.5)}`).replace(/""/g, '"');
                 const bpH_val = isQiw ? (bpc.qiwPlateType === 'QBP54' ? 5.0 : 4.0) : (bpc.height || 6.0);
+                const bpQty = parseInt(bpc.qty, 10) || (2 * getGateAssemblyQty());
 
                 bomItems.push({
                     mark: bpMarkStr,
-                    qty: 1,
+                    qty: bpQty,
                     desc: bpDesc,
                     remark: "BASE PLATE",
-                    len: isQiw ? "" : formatFraction(bpH_val)
+                    len: isQiw ? "" : formatFraction(bpH_val),
+                    isSubSheetItem: true
                 });
             } else if (activeSubMode === 'infillSheet') {
                 const infillSheet = sheets.find(s => s.id === 'infillSheet') || { cleanDrawingNo: cleanDrawingNo, mainMark: `${cleanDrawingNo}M1` };
@@ -27008,7 +27298,7 @@ if (botMark) {
                 const infillH = parseFloat(cfg.height !== undefined && cfg.height !== "" ? cfg.height : defaultH) || 69.0;
                 const infillType = (cfg.infillType || (v.meshType === 'wwm' ? 'wwm' : 'xf')).toLowerCase();
                 const isWwm = (infillType === 'wwm');
-                const qty = parseInt(cfg.qty) || 1;
+                const qty = parseInt(cfg.qty, 10) || (2 * getGateAssemblyQty());
                 const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : `${infillSheet.cleanDrawingNo}M1`;
                 const widthFormatted = formatFraction(infillW);
                 const heightFormatted = formatFraction(infillH);
@@ -27041,12 +27331,13 @@ if (botMark) {
                     qty: qty,
                     desc: meshDesc,
                     remark: meshRemark,
-                    len: heightFormatted
+                    len: heightFormatted,
+                    isSubSheetItem: true
                 });
             } else if (activeSubMode === 'stopper') {
                 const stopperSheet = sheets.find(s => s.id === 'stopper') || { cleanDrawingNo: cleanDrawingNo, mainMark: `${cleanDrawingNo}M1` };
                 const cfg = stopperConfig || {};
-                const qty = parseInt(cfg.qty) || 1;
+                const qty = parseInt(cfg.qty, 10) || (1 * getGateAssemblyQty());
                 const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : `${stopperSheet.cleanDrawingNo}M1`;
                 const descText = (cfg.description && cfg.description.trim()) ? cfg.description.trim() : 'QGS1';
 
@@ -27056,12 +27347,13 @@ if (botMark) {
                     desc: descText,
                     remark: "GATE STOPPER",
                     len: "",
-                    grade: "A36"
+                    grade: "A36",
+                    isSubSheetItem: true
                 });
             } else if (activeSubMode === 'panicBarPlate') {
                 const panicBarSheet = sheets.find(s => s.id === 'panicBarPlate') || { cleanDrawingNo: cleanDrawingNo, mainMark: `${cleanDrawingNo}M1` };
                 const cfg = panicBarPlateConfig || {};
-                const qty = parseInt(cfg.qty) || 1;
+                const qty = parseInt(cfg.qty, 10) || (1 * getGateAssemblyQty());
                 const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : `${panicBarSheet.cleanDrawingNo}M1`;
                 const thickStr = formatFraction(cfg.thickness || 0.25).replace(/"/g, '');
                 const widthStr = formatFraction(cfg.width || 8.0).replace(/"/g, '');
@@ -27075,7 +27367,8 @@ if (botMark) {
                     remark: "PANIC BAR PLATE",
                     len: lenFormatted,
                     shape: "PL",
-                    grade: cfg.grade || "A36"
+                    grade: cfg.grade || "A36",
+                    isSubSheetItem: true
                 });
             }
         }
@@ -27555,6 +27848,11 @@ if (botMark) {
 
                 const kpMark = getMark(hasKickPlate);
 
+                const pbElem = (typeof document !== 'undefined') ? document.getElementById('inp-panicBarPlate') : null;
+                const rawPbVal = (pbElem && pbElem.value) ? pbElem.value : (vals.panicBarPlate || 'none');
+                const hasPanicBarPlate = (isGates || cat === 'rails_gates') && (rawPbVal && rawPbVal !== 'none');
+                const pbMark = getMark(hasPanicBarPlate);
+
 
                 const meshMark = getMark(hasMesh);
 
@@ -27608,36 +27906,25 @@ if (botMark) {
 
 
                 if (topMark) {
-
-
-                    const sizeName = vals.topRailSize === 'CUSTOM' ? `HSS ${vals.topRailH}x${vals.topRailH}` : vals.topRailSize;
-
-
-                    bomItems.push({ mark: topMark, remark: isGates ? "TOP RUNNER" : "TOP RAIL", desc: sizeName, qty: 1, len: formatFraction(preciseTopLen) });
-
-
+                    const isCustom = (vals.topRailSize === 'CUSTOM');
+                    const sizeName = isCustom ? (vals.topRailCustomDesc || `HSS ${vals.topRailH}x${vals.topRailH}`) : vals.topRailSize;
+                    bomItems.push({ mark: topMark, remark: isGates ? "TOP RUNNER" : "TOP RAIL", desc: sizeName, fbomDesc: isCustom ? vals.topRailCustomFbomDesc : undefined, shape: isCustom ? vals.topRailCustomShape : undefined, grade: isCustom ? vals.topRailCustomGrade : undefined, qty: 1, len: formatFraction(preciseTopLen) });
                 }
-
 
                 if (botMark) {
-
-
-                    const sizeName = vals.botRailSize === 'CUSTOM' ? `HSS ${vals.botRailH}x${vals.botRailH}` : vals.botRailSize;
-
-
-                    bomItems.push({ mark: botMark, remark: isGates ? "BOTTOM RUNNER" : "BOTTOM RAIL", desc: sizeName, qty: 1, len: formatFraction(preciseBotLen) });
-
-
+                    const isCustom = (vals.botRailSize === 'CUSTOM');
+                    const sizeName = isCustom ? (vals.botRailCustomDesc || `HSS ${vals.botRailH}x${vals.botRailH}`) : vals.botRailSize;
+                    bomItems.push({ mark: botMark, remark: isGates ? "BOTTOM RUNNER" : "BOTTOM RAIL", desc: sizeName, fbomDesc: isCustom ? vals.botRailCustomFbomDesc : undefined, shape: isCustom ? vals.botRailCustomShape : undefined, grade: isCustom ? vals.botRailCustomGrade : undefined, qty: 1, len: formatFraction(preciseBotLen) });
                 }
 
-
                 if (midMark) {
-                    let sizeName = vals.midRailSize === 'CUSTOM' ? `HSS ${vals.midRailH}x${vals.midRailH}` : vals.midRailSize;
-                    let shapeType = (vals.midRailType || 'hss_rect').toUpperCase();
-                    let fbomDesc = sizeName;
-                    let itemGrade = 'A500';
+                    const isCustom = (vals.midRailSize === 'CUSTOM' || vals.midRailType === 'custom');
+                    let sizeName = isCustom ? (vals.midRailCustomDesc || `HSS ${vals.midRailH}x${vals.midRailH}`) : vals.midRailSize;
+                    let shapeType = isCustom ? (vals.midRailCustomShape || 'HSS') : (vals.midRailType || 'hss_rect').toUpperCase();
+                    let fbomDesc = isCustom ? (vals.midRailCustomFbomDesc || sizeName) : sizeName;
+                    let itemGrade = isCustom ? (vals.midRailCustomGrade || 'A500') : 'A500';
 
-                    if (vals.midRailType === 'channel' || String(vals.midRailSize).toUpperCase().includes('CBAR') || String(vals.midRailSize).toUpperCase().includes('C-BAR')) {
+                    if (!isCustom && (vals.midRailType === 'channel' || String(vals.midRailSize).toUpperCase().includes('CBAR') || String(vals.midRailSize).toUpperCase().includes('C-BAR'))) {
                         shapeType = 'CBAR';
                         itemGrade = 'A36';
                         const rawMidUpper = String(vals.midRailSize || '').toUpperCase();
@@ -27651,7 +27938,7 @@ if (botMark) {
                             sizeName = 'CBAR 1-1/2x1/2x1/8';
                             fbomDesc = '1 1/2 x 1/2 x 1/8';
                         }
-                    } else if (vals.midRailType === 'angles' || String(vals.midRailSize).toUpperCase().startsWith('L')) {
+                    } else if (!isCustom && (vals.midRailType === 'angles' || String(vals.midRailSize).toUpperCase().startsWith('L'))) {
                         shapeType = 'L';
                         itemGrade = 'A36';
                     }
@@ -27659,54 +27946,29 @@ if (botMark) {
                     bomItems.push({ mark: midMark, remark: isGates ? "MID RUNNER" : "MID RAIL", desc: sizeName, fbomDesc: fbomDesc, qty: 1, len: formatFraction(preciseMidLen), shape: shapeType, grade: itemGrade });
                 }
 
-
                 if (leftMark) {
-
-
                     const lSize = vals.leftPostSize || vals.postSize || 'HSS2x2x14GA';
-
-
-                    const sizeName = lSize === 'CUSTOM' ? `HSS ${vals.leftPostW}x${vals.leftPostW}` : lSize;
-
-
-                    bomItems.push({ mark: leftMark, remark: "LEFT RUNNER", desc: sizeName, qty: 1, len: formatFraction(runnerH) });
-
-
+                    const isCustom = (lSize === 'CUSTOM');
+                    const sizeName = isCustom ? (vals.leftPostCustomDesc || `HSS ${vals.leftPostW}x${vals.leftPostW}`) : lSize;
+                    bomItems.push({ mark: leftMark, remark: "LEFT RUNNER", desc: sizeName, fbomDesc: isCustom ? vals.leftPostCustomFbomDesc : undefined, shape: isCustom ? vals.leftPostCustomShape : undefined, grade: isCustom ? vals.leftPostCustomGrade : undefined, qty: 1, len: formatFraction(runnerH) });
                 }
-
 
                 if (rightMark) {
-
-
                     const rSize = vals.rightPostSize || vals.postSize || 'HSS2x2x14GA';
-
-
-                    const sizeName = rSize === 'CUSTOM' ? `HSS ${vals.rightPostW}x${vals.rightPostW}` : rSize;
-
-
-                    bomItems.push({ mark: rightMark, remark: "RIGHT RUNNER", desc: sizeName, qty: 1, len: formatFraction(runnerH) });
-
-
+                    const isCustom = (rSize === 'CUSTOM');
+                    const sizeName = isCustom ? (vals.rightPostCustomDesc || `HSS ${vals.rightPostW}x${vals.rightPostW}`) : rSize;
+                    bomItems.push({ mark: rightMark, remark: "RIGHT RUNNER", desc: sizeName, fbomDesc: isCustom ? vals.rightPostCustomFbomDesc : undefined, shape: isCustom ? vals.rightPostCustomShape : undefined, grade: isCustom ? vals.rightPostCustomGrade : undefined, qty: 1, len: formatFraction(runnerH) });
                 }
-
 
                 if (midPostMark) {
-
-
                     const sizeName = vals.midPostSize === 'CUSTOM' ? `HSS ${vals.midPostW}x${vals.midPostW}` : vals.midPostSize;
-
-
                     const finalMidPostHeight = runnerH - botH;
-
-
                     bomItems.push({ mark: midPostMark, remark: "MID POST", desc: sizeName, qty: midPostCount, len: formatFraction(finalMidPostHeight) });
-
-
                 }
 
-
                 if (picketMark) {
-                    const sizeName = vals.picketSize === 'CUSTOM' ? `HSS ${vals.picketW}x${vals.picketW}` : vals.picketSize;
+                    const isCustom = (vals.picketSize === 'CUSTOM');
+                    const sizeName = isCustom ? (vals.picketCustomDesc || `HSS ${vals.picketW}x${vals.picketW}`) : vals.picketSize;
                     const hasMidRail = (vals.midRailType && vals.midRailType !== 'none');
                     const isWeldTop = (vals.picketMidJoint === 'weld_top' && hasMidRail);
                     let picketH;
@@ -27722,76 +27984,35 @@ if (botMark) {
                         }
                         picketH = picketTopY - picketBottomY;
                     }
-                    bomItems.push({ mark: picketMark, remark: isWeldTop ? "UPPER PICKET" : "PICKET", desc: sizeName, qty: finalPicketsCount, len: formatFraction(picketH) });
+                    bomItems.push({ mark: picketMark, remark: isWeldTop ? "UPPER PICKET" : "PICKET", desc: sizeName, fbomDesc: isCustom ? vals.picketCustomFbomDesc : undefined, shape: isCustom ? vals.picketCustomShape : undefined, grade: isCustom ? vals.picketCustomGrade : undefined, qty: finalPicketsCount, len: formatFraction(picketH) });
                 }
 
-
                 if (puppyPicketMark) {
-
-
-                    const sizeName = vals.picketSize === 'CUSTOM' ? `HSS ${vals.picketW}x${vals.picketW}` : vals.picketSize;
-
-
+                    const isCustom = (vals.picketSize === 'CUSTOM');
+                    const sizeName = isCustom ? (vals.picketCustomDesc || `HSS ${vals.picketW}x${vals.picketW}`) : vals.picketSize;
                     const puppyLen = parseFloat(vals.puppyPicketsLength) || 16.0;
-
-
                     const spanCenterDist = (vals.length - rightPostW / 2) - (leftPostW / 2);
-
-
                     const targetSpacing = vals.picketSpacing || 4.0;
-
-
                     const endGap = (spanCenterDist - (finalPicketsCount - 1) * targetSpacing) / 2;
-
-
                     const puppyPSpc = parseFloat(vals.puppyPicketsSpacing) || 2.0;
-
-
                     let puppyQty = finalPicketsCount - 1;
-
-
                     if (puppyQty < 0) puppyQty = 0;
 
-
                     // Left end gap
-
-
                     const px_0 = leftPostW / 2 + endGap;
-
-
                     const clearLeftGap = (px_0 - pickW / 2) - leftPostW;
-
-
                     if (clearLeftGap > puppyPSpc * 0.9) {
-
-
                         puppyQty++;
-
-
                     }
-
 
                     // Right end gap
-
-
                     const x_last = leftPostW / 2 + endGap + (finalPicketsCount - 1) * targetSpacing;
-
-
                     const clearRightGap = (vals.length - rightPostW) - (x_last + pickW / 2);
-
-
                     if (clearRightGap > puppyPSpc * 0.9) {
-
-
                         puppyQty++;
-
-
                     }
 
-
-                    bomItems.push({ mark: puppyPicketMark, remark: "PUPPY PICKET", desc: sizeName, qty: puppyQty, len: formatFraction(puppyLen) });
-
-
+                    bomItems.push({ mark: puppyPicketMark, remark: "PUPPY PICKET", desc: sizeName, fbomDesc: isCustom ? vals.picketCustomFbomDesc : undefined, shape: isCustom ? vals.picketCustomShape : undefined, grade: isCustom ? vals.picketCustomGrade : undefined, qty: puppyQty, len: formatFraction(puppyLen) });
                 }
 
 
@@ -27840,7 +28061,7 @@ if (botMark) {
                     }
 
 
-                    let kpH = (!isNaN(userKpH) && userKpH > 0 && userKpH !== 10.0 && userKpH !== calculatedKpH) ? userKpH : calculatedKpH;
+                    let kpH = calculatedKpH;
 
 
                     let tStr = '3/16"';
@@ -27891,6 +28112,28 @@ if (botMark) {
 
                 }
 
+                if (pbMark && hasPanicBarPlate) {
+                    const pbSize = rawPbVal || 'PL3/16';
+                    const pbLen = Math.max(1, vals.length - leftPostW - rightPostW);
+                    const pbW = parseFloat(vals.panicBarPlateW) || 10.0;
+                    let tStr = pbSize.startsWith('PL') ? pbSize.replace('PL', '') : pbSize;
+                    const widthFormatted = formatFraction(pbW).replace(/["']/g, '');
+                    const pbDesc = `PL ${tStr}X${widthFormatted}`;
+                    const pbFbomDesc = `${tStr} X ${widthFormatted}`;
+                    bomItems.push({
+                        mark: pbMark,
+                        remark: "PANIC BAR PLATE",
+                        desc: pbDesc,
+                        fbomDesc: pbFbomDesc,
+                        qty: 1,
+                        len: formatFraction(pbLen),
+                        shape: 'PL',
+                        grade: 'A36',
+                        category: 'PLATE',
+                        subCategory: 'PANIC BAR PLATE'
+                    });
+                }
+
 
                 if (meshMark) {
 
@@ -27925,27 +28168,13 @@ if (botMark) {
                     const hasKP = (vals.kickPlate !== 'none');
 
 
-                    const midGap = vals.midRailGap || 6.0;
-
-
+                    const midGap = (vals.midRailGap !== undefined && vals.midRailGap !== '') ? parseFloat(vals.midRailGap) : 6.0;
                     let kpH = parseFloat(vals.kickPlateH) || 10.0;
-
-
                     let isOuterKP = (vals.kickPlateWeld === 'outer');
-
-
                     if (isOuterKP) {
-
-
-                        kpH = hasMid ? (vals.midRailGap || 6.0) : (parseFloat(vals.kickPlateH) || 10.0);
-
-
+                        kpH = hasMid ? (bH + midGap + mH) : (parseFloat(vals.kickPlateH) || 10.0);
                     } else {
-
-
-                        kpH = hasMid ? Math.max(2, (vals.midRailGap || 6.0) - bH - mH) : (parseFloat(vals.kickPlateH) || 10.0);
-
-
+                        kpH = hasMid ? midGap : (parseFloat(vals.kickPlateH) || 10.0);
                     }
 
 
@@ -28483,7 +28712,8 @@ if (botMark) {
                         qty: lpParams.qty,
                         desc: lpParams.postDwgName,
                         remark: "LOOSE POST",
-                        len: formatFraction(lpParams.pHeight)
+                        len: formatFraction(lpParams.pHeight),
+                        isSubSheetItem: true
                     });
 
                     if (loosePostConfig.includeBP === 'yes') {
@@ -28492,10 +28722,11 @@ if (botMark) {
 
                         bomItems.push({
                             mark: lpBp.bpMark,
-                            qty: loosePostConfig.qty || 1,
+                            qty: lpParams.qty,
                             desc: lpBp.bpDesc,
                             remark: "BASE PLATE",
-                            len: lpBp.isQiw ? "" : formatFraction(lpBp.bpHeight)
+                            len: lpBp.isQiw ? "" : formatFraction(lpBp.bpHeight),
+                            isSubSheetItem: true
                         });
                     }
                 }
@@ -28503,6 +28734,7 @@ if (botMark) {
                 const bpSheet = sheets.find(s => s.id === 'basePlate');
                 if (bpSheet) {
                     const bpc = basePlateConfig || getDefaultBasePlateConfig();
+                    const bpQty = parseInt(bpc.qty, 10) || (2 * getGateAssemblyQty());
                     const bpMarkStr = bpSheet.mainMark || `${bpSheet.cleanDrawingNo}M1`;
                     const isQiw = bpc.plateShape === 'qiw_standard';
                     const bpDesc = isQiw 
@@ -28512,10 +28744,11 @@ if (botMark) {
 
                     bomItems.push({
                         mark: bpMarkStr,
-                        qty: 1,
+                        qty: bpQty,
                         desc: bpDesc,
                         remark: "BASE PLATE",
-                        len: isQiw ? "" : formatFraction(bpH_val)
+                        len: isQiw ? "" : formatFraction(bpH_val),
+                        isSubSheetItem: true
                     });
                 }
 
@@ -28530,7 +28763,7 @@ if (botMark) {
                     const infillH = parseFloat(cfg.height !== undefined && cfg.height !== "" ? cfg.height : defaultH) || 69.0;
                     const infillType = (cfg.infillType || (vals.meshType === 'wwm' ? 'wwm' : 'xf')).toLowerCase();
                     const isWwm = (infillType === 'wwm');
-                    const qty = parseInt(cfg.qty) || 1;
+                    const qty = parseInt(cfg.qty, 10) || (2 * getGateAssemblyQty());
                     const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : `${infillSheet.cleanDrawingNo}M1`;
                     const widthFormatted = formatFraction(infillW);
                     const heightFormatted = formatFraction(infillH);
@@ -28563,14 +28796,15 @@ if (botMark) {
                         qty: qty,
                         desc: meshDesc,
                         remark: meshRemark,
-                        len: heightFormatted
+                        len: heightFormatted,
+                        isSubSheetItem: true
                     });
                 }
 
                 const stopperSheet = sheets.find(s => s.id === 'stopper');
                 if (stopperSheet) {
                     const cfg = stopperConfig || {};
-                    const qty = parseInt(cfg.qty) || 1;
+                    const qty = parseInt(cfg.qty, 10) || (1 * getGateAssemblyQty());
                     const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : `${stopperSheet.cleanDrawingNo}M1`;
                     const descText = (cfg.description && cfg.description.trim()) ? cfg.description.trim() : 'QGS1';
 
@@ -28580,14 +28814,15 @@ if (botMark) {
                         desc: descText,
                         remark: "GATE STOPPER",
                         len: "",
-                        grade: "A36"
+                        grade: "A36",
+                        isSubSheetItem: true
                     });
                 }
 
                 const panicBarSheet = sheets.find(s => s.id === 'panicBarPlate');
                 if (panicBarSheet) {
                     const cfg = panicBarPlateConfig || {};
-                    const qty = parseInt(cfg.qty) || 1;
+                    const qty = parseInt(cfg.qty, 10) || (1 * getGateAssemblyQty());
                     const pieceMark = (cfg.pieceMark && cfg.pieceMark.trim()) ? cfg.pieceMark.trim() : `${panicBarSheet.cleanDrawingNo}M1`;
                     const thickStr = formatFraction(cfg.thickness || 0.25).replace(/"/g, '');
                     const widthStr = formatFraction(cfg.width || 8.0).replace(/"/g, '');
@@ -28601,7 +28836,8 @@ if (botMark) {
                         remark: "PANIC BAR PLATE",
                         len: lenFormatted,
                         shape: "PL",
-                        grade: cfg.grade || "A36"
+                        grade: cfg.grade || "A36",
+                        isSubSheetItem: true
                     });
                 }
             }
@@ -28630,7 +28866,7 @@ if (botMark) {
         consolidatedPreviewItems.forEach(item => {
 
 
-            const totalQty = typeof item.qty === 'number' ? (item.qty * assemblyQty) : item.qty;
+            const totalQty = item.isSubSheetItem ? item.qty : (typeof item.qty === 'number' ? (item.qty * assemblyQty) : item.qty);
 
 
             const tr = document.createElement('tr');
@@ -33206,86 +33442,33 @@ if (botMark) {
 
 
         const getProfileDimension = (type, size, customVal) => {
-
-
-            if (type === 'none' || size === 'NONE') return 0;
-
-
-            if (size === 'CUSTOM') return customVal;
-
-
+            if (type === 'none' || size === 'NONE' || size === 'none') return 0;
+            if (size === 'CUSTOM') return parseFloat(customVal) || 2.0;
             const shapes = SHAPES_DB[type] || [];
-
-
             const selected = shapes.find(s => s.id === size);
-
-
             if (selected) {
-
-
                 if (type === 'hss_rect') return selected.h || selected.w || 0;
-
-
                 if (type === 'hss_circ') return selected.d || 0;
-
-
                 if (type === 'w_beam') return selected.d || 0;
-
-
                 if (type === 'angles') return selected.leg2 || selected.leg1 || 0;
-
-
                 if (type === 'plate') return selected.t || 0;
-
-
             }
-
-
-            return customVal;
-
-
+            return parseFloat(customVal) || 2.0;
         };
 
-
         const getPicketDimension = (type, size, customVal) => {
-
-
-            if (type === 'none' || size === 'NONE') return 0;
-
-
-            if (size === 'CUSTOM') return customVal;
-
-
+            if (type === 'none' || size === 'NONE' || size === 'none') return 0;
+            if (size === 'CUSTOM') return parseFloat(customVal) || 2.0;
             const shapes = SHAPES_DB[type] || [];
-
-
             const selected = shapes.find(s => s.id === size);
-
-
             if (selected) {
-
-
                 if (type === 'hss_rect') return selected.w || 0;
-
-
                 if (type === 'hss_circ') return selected.d || 0;
-
-
                 if (type === 'w_beam') return selected.bf || 0;
-
-
                 if (type === 'angles') return selected.leg1 || 0;
-
-
                 if (type === 'plate') return selected.t || 0;
-
-
             }
-
-
-            return customVal;
-
-
+            return parseFloat(customVal) || 2.0;
         };
 
 
@@ -33388,21 +33571,30 @@ if (botMark) {
                 }
 
                 // RIGHT VERTICAL DIMENSIONS
+                const hasPB = (cat === 'rails_gates') && (vals.panicBarPlate && vals.panicBarPlate !== 'none');
+                const pbOffset = hasPB ? 5 : 0;
+
                 // Level 1: Overall Height
                 const overallH = cadMaxY - cadMinY;
                 if (overallH > 0) {
-                    drawVerticalDim(cadMinY_in, cadMaxY_in, cadMaxX_in + 14, formatFraction(overallH), cadMaxX_in);
+                    drawVerticalDim(cadMinY_in, cadMaxY_in, cadMaxX_in + 14 + pbOffset, formatFraction(overallH), cadMaxX_in);
                 }
 
                 // Level 2: Post Height
                 if (!noPosts && pHeight > 0) {
-                    drawVerticalDim(0, pHeight, cadMaxX_in + 9, formatFraction(pHeight), cadMaxX_in);
+                    drawVerticalDim(0, pHeight, cadMaxX_in + 9 + pbOffset, formatFraction(pHeight), cadMaxX_in);
                 }
 
                 // Level 3: Panel Body Height
                 if (fHeight > 0) {
                     const panelBottomY = pHeight > fHeight ? (pHeight - fHeight) : 0;
-                    drawVerticalDim(panelBottomY, panelBottomY + fHeight, cadMaxX_in + 4, formatFraction(fHeight), cadMaxX_in);
+                    drawVerticalDim(panelBottomY, panelBottomY + fHeight, cadMaxX_in + 4 + pbOffset, formatFraction(fHeight), cadMaxX_in);
+                }
+
+                // Level 4: Panic Bar Plate Gap (from bottom of gate to center of panic bar plate)
+                if (hasPB) {
+                    const pbGap = parseFloat(vals.panicBarPlateGap) || 36.0;
+                    drawVerticalDim(0, pbGap, cadMaxX_in + 4, formatFraction(pbGap), cadMaxX_in);
                 }
             }
 
@@ -33689,6 +33881,9 @@ if (botMark) {
                 lengthVal = parseFloat(vals.puppyPicketsLength) || 16.0;
 
 
+            } else if (leaderId === "leader-panicbarplate") {
+                descLabel = "PANIC BAR PLATE";
+                lengthVal = Math.max(1, vals.length - (vals.leftPostW || 2.0) - (vals.rightPostW || 2.0));
             }
 
 
@@ -34009,6 +34204,11 @@ if (botMark) {
 
             const kpMark = getMark(hasKickPlate);
 
+            const pbElem = (typeof document !== 'undefined') ? document.getElementById('inp-panicBarPlate') : null;
+            const rawPbVal = (pbElem && pbElem.value) ? pbElem.value : (vals.panicBarPlate || 'none');
+            const hasPanicBarPlate = (isGates || cat === 'rails_gates') && (rawPbVal && rawPbVal !== 'none');
+            const pbMark = getMark(hasPanicBarPlate);
+
 
             const meshMark = getMark(hasMesh);
 
@@ -34200,6 +34400,14 @@ if (botMark) {
                 drawViewportLeader(vals.length * 0.75, kickPlateH / 2, "right", kpMark + kpLabelSuffix, "leader-kickplate");
 
 
+            }
+
+            // 7B. Panic Bar Plate
+            if (pbMark && hasPanicBarPlate) {
+                const actualPbW = parseFloat(vals.panicBarPlateW) || 10.0;
+                const pbCenterY = parseFloat(vals.panicBarPlateGap) || 36.0;
+                const pbY = Math.max(0, pbCenterY - actualPbW / 2);
+                drawViewportLeader(vals.length * 0.75, pbY + actualPbW / 2, "right", pbMark, "leader-panicbarplate");
             }
 
 

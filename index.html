@@ -787,18 +787,74 @@
                 <div class="input-group" style="margin-bottom: 0;">
                     <label style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px; display: block;">Left Side Runner</label>
                     <select id="inp-leftPostSize" style="width: 100%;"></select>
+                    <div id="grp-custom-leftPostSize" class="hidden" style="display: grid; grid-template-columns: 95px 1fr; gap: 6px; margin-top: 6px;">
+                        <select id="inp-leftPostCustomShape" title="Custom Shape" style="font-size: 0.75rem; padding: 4px 6px;">
+                            <option value="HSS" selected>HSS</option>
+                            <option value="PIPE">PIPE</option>
+                            <option value="L">L (Angle)</option>
+                            <option value="C">C (Channel)</option>
+                            <option value="CBAR">CBAR</option>
+                            <option value="FB">FB (Flat Bar)</option>
+                            <option value="PL">PL (Plate)</option>
+                            <option value="SQ">SQ (Bar)</option>
+                            <option value="W">W (Beam)</option>
+                        </select>
+                        <input type="text" id="inp-leftPostCustomSpec" value="2x2x11GA" placeholder="e.g. 2x2x11GA" style="font-size: 0.75rem; padding: 4px 8px; font-family: 'JetBrains Mono', monospace;">
+                    </div>
                 </div>
                 <div class="input-group" style="margin-bottom: 0;">
                     <label style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px; display: block;">Right Side Runner</label>
                     <select id="inp-rightPostSize" style="width: 100%;"></select>
+                    <div id="grp-custom-rightPostSize" class="hidden" style="display: grid; grid-template-columns: 95px 1fr; gap: 6px; margin-top: 6px;">
+                        <select id="inp-rightPostCustomShape" title="Custom Shape" style="font-size: 0.75rem; padding: 4px 6px;">
+                            <option value="HSS" selected>HSS</option>
+                            <option value="PIPE">PIPE</option>
+                            <option value="L">L (Angle)</option>
+                            <option value="C">C (Channel)</option>
+                            <option value="CBAR">CBAR</option>
+                            <option value="FB">FB (Flat Bar)</option>
+                            <option value="PL">PL (Plate)</option>
+                            <option value="SQ">SQ (Bar)</option>
+                            <option value="W">W (Beam)</option>
+                        </select>
+                        <input type="text" id="inp-rightPostCustomSpec" value="2x2x11GA" placeholder="e.g. 2x2x11GA" style="font-size: 0.75rem; padding: 4px 8px; font-family: 'JetBrains Mono', monospace;">
+                    </div>
                 </div>
                 <div class="input-group" style="margin-bottom: 0;">
                     <label style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px; display: block;">Top Runner</label>
                     <select id="inp-topRailSize" style="width: 100%;"></select>
+                    <div id="grp-custom-topRailSize" class="hidden" style="display: grid; grid-template-columns: 95px 1fr; gap: 6px; margin-top: 6px;">
+                        <select id="inp-topRailCustomShape" title="Custom Shape" style="font-size: 0.75rem; padding: 4px 6px;">
+                            <option value="HSS" selected>HSS</option>
+                            <option value="PIPE">PIPE</option>
+                            <option value="L">L (Angle)</option>
+                            <option value="C">C (Channel)</option>
+                            <option value="CBAR">CBAR</option>
+                            <option value="FB">FB (Flat Bar)</option>
+                            <option value="PL">PL (Plate)</option>
+                            <option value="SQ">SQ (Bar)</option>
+                            <option value="W">W (Beam)</option>
+                        </select>
+                        <input type="text" id="inp-topRailCustomSpec" value="2x2x11GA" placeholder="e.g. 2x2x11GA" style="font-size: 0.75rem; padding: 4px 8px; font-family: 'JetBrains Mono', monospace;">
+                    </div>
                 </div>
                 <div class="input-group" style="margin-bottom: 0;">
                     <label style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px; display: block;">Bottom Runner</label>
                     <select id="inp-botRailSize" style="width: 100%;"></select>
+                    <div id="grp-custom-botRailSize" class="hidden" style="display: grid; grid-template-columns: 95px 1fr; gap: 6px; margin-top: 6px;">
+                        <select id="inp-botRailCustomShape" title="Custom Shape" style="font-size: 0.75rem; padding: 4px 6px;">
+                            <option value="HSS" selected>HSS</option>
+                            <option value="PIPE">PIPE</option>
+                            <option value="L">L (Angle)</option>
+                            <option value="C">C (Channel)</option>
+                            <option value="CBAR">CBAR</option>
+                            <option value="FB">FB (Flat Bar)</option>
+                            <option value="PL">PL (Plate)</option>
+                            <option value="SQ">SQ (Bar)</option>
+                            <option value="W">W (Beam)</option>
+                        </select>
+                        <input type="text" id="inp-botRailCustomSpec" value="2x2x11GA" placeholder="e.g. 2x2x11GA" style="font-size: 0.75rem; padding: 4px 8px; font-family: 'JetBrains Mono', monospace;">
+                    </div>
                 </div>
             </div>
             <div style="margin-top: 20px; text-align: right; border-top: 1px solid var(--border-color); padding-top: 12px; display: flex; justify-content: flex-end;">
